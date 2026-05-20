@@ -1,5 +1,6 @@
 mod file_manager;
 mod arg_parser;
+mod crypto;
 
 use file_manager::FileManager;
 use arg_parser::Command;

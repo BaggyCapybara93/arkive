@@ -1,5 +1,7 @@
+use crate::crypto::hash_file;
 use std::fs;
 use std::path::Path;
+
 
 pub struct FileManager {
     pub file_path: String,
@@ -36,6 +38,17 @@ impl FileManager {
             fs::copy(src, dst)?;
         }
 
+        if let Ok(src_hash) = hash_file(&self.file_path) {
+            if let Ok(dst_hash) = hash_file(&self.file_dest) {
+                if src_hash != dst_hash {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "Hash mismatch after copy, file may be corrupted",
+                    ));
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -58,7 +71,7 @@ impl FileManager {
     }
 }
 
-fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+pub fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     if !dst.exists() {
         fs::create_dir_all(dst)?;
     }
@@ -72,7 +85,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
         if file_type.is_dir() {
             copy_dir_recursive(&src_path, &dst_path)?;
         } else {
-            fs::copy(&src_path, &dst_path)?;
+            FileManager::copy_path(&FileManager::new(src_path.to_string_lossy().into_owned(), dst_path.to_string_lossy().into_owned()), true)?;
         }
     }
 
