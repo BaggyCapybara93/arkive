@@ -1,5 +1,6 @@
 use crate::crypto::hash_file;
 use std::fs;
+use std::io;
 use std::path::Path;
 
 
@@ -18,7 +19,13 @@ impl FileManager {
         let dst = Path::new(&self.file_dest);
 
         // rename works for both files and directories
-        fs::rename(src, dst)?;
+        fs::rename(src, dst).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("Failed to move {:?} to {:?}: {}", src, dst, e)
+            )
+        })?;
+        
         Ok(())
     }
 
@@ -26,26 +33,39 @@ impl FileManager {
         let src = Path::new(&self.file_path);
         let dst = Path::new(&self.file_dest);
 
+        if !src.exists() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Source path {:?} does not exist", src),
+            ));
+        }
+
         if src.is_dir() {
             if !recursive {
                 return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "Use --recursive to copy directories",
+                    std::io::ErrorKind::InvalidInput,
+                    format!("Use --recursive to copy directories: {:?}", src),
                 ));
             }
             copy_dir_recursive(src, dst)?;
         } else {
-            fs::copy(src, dst)?;
+            fs::copy(src, dst).map_err(|e| {
+                io::Error::new(
+                    e.kind(),
+                    format!("Failed to copy {:?} to {:?}: {}", src, dst, e)
+                )
+            })?;
         }
 
-        if let Ok(src_hash) = hash_file(&self.file_path) {
-            if let Ok(dst_hash) = hash_file(&self.file_dest) {
-                if src_hash != dst_hash {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        "Hash mismatch after copy, file may be corrupted",
-                    ));
-                }
+        if src.is_file() {
+            let src_hash = hash_file(&self.file_path)?;
+            let dst_hash = hash_file(&self.file_dest)?;
+
+            if src_hash != dst_hash {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Hash mismatch after copy — file may be corrupted",
+                ));
             }
         }
 
@@ -58,8 +78,8 @@ impl FileManager {
         if src.is_dir() {
             if !recursive {
                 return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "Use --recursive to delete directories",
+                    std::io::ErrorKind::InvalidInput,
+                    format!("Use --recursive to delete directories: {:?}", src),
                 ));
             }
             fs::remove_dir_all(src)?;
@@ -76,6 +96,20 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
         fs::create_dir_all(dst)?;
     }
 
+    if !src.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotADirectory,
+            format!("Source is not a directory: {:?}", src),
+        ));
+    }
+
+    if dst.starts_with(src) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("Destination {:?} cannot be inside source {:?}", dst, src),
+        ));
+    }
+
     for entry in fs::read_dir(src)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
@@ -85,7 +119,12 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
         if file_type.is_dir() {
             copy_dir_recursive(&src_path, &dst_path)?;
         } else {
-            FileManager::copy_path(&FileManager::new(src_path.to_string_lossy().into_owned(), dst_path.to_string_lossy().into_owned()), true)?;
+            fs::copy(&src_path, &dst_path).map_err(|e| {
+                io::Error::new(
+                    e.kind(),
+                    format!("Failed to copy {:?} to {:?}: {}", src_path, dst_path, e)
+                )
+            })?;
         }
     }
 
