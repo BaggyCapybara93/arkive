@@ -17,6 +17,7 @@ fn main() {
             println!("Available commands:");
             println!("  move <src> <dest> [--recursive]");
             println!("  copy <src> <dest>");
+            println!("  compress <src> <dest>");
         }
 
         Command::Move { src, dest, recursive } => {
@@ -32,6 +33,11 @@ fn main() {
         Command::Copy { src, dest } => {
             let fm = FileManager::new(src, dest);
             fm.copy_path(true).expect("Failed to copy file or directory");
+        }
+
+        Command::Compress { src, dest } => {
+            let fm = FileManager::new(src, dest);
+            fm.compress_path().expect("Failed to compress file or directory");
         }
     }
 }

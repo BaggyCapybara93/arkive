@@ -6,6 +6,7 @@ pub enum Command {
     Help,
     Move { src: String, dest: String, recursive: bool },
     Copy { src: String, dest: String },
+    Compress { src: String, dest: String },
 }
 
 impl ParseArguments {
@@ -53,6 +54,17 @@ impl ParseArguments {
                 }
 
                 Ok(Command::Copy {
+                    src: paths[0].clone(),
+                    dest: paths[1].clone(),
+                })
+            }
+
+            "compress" => {
+                if paths.len() < 2 {
+                    return Err("Compress command requires <src> <dest>".into());
+                }
+
+                Ok(Command::Compress {
                     src: paths[0].clone(),
                     dest: paths[1].clone(),
                 })

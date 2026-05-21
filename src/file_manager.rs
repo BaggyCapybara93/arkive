@@ -2,7 +2,10 @@ use crate::crypto::hash_file;
 use std::fs;
 use std::io;
 use std::path::Path;
-
+use flate2::write::GzEncoder;
+use flate2::Compression;
+use tar::Builder;
+use std::fs::File;
 
 pub struct FileManager {
     pub file_path: String,
@@ -25,7 +28,7 @@ impl FileManager {
                 format!("Failed to move {:?} to {:?}: {}", src, dst, e)
             )
         })?;
-        
+
         Ok(())
     }
 
@@ -47,7 +50,7 @@ impl FileManager {
                     format!("Use --recursive to copy directories: {:?}", src),
                 ));
             }
-            copy_dir_recursive(src, dst)?;
+            Self::copy_dir_recursive(src, dst)?;
         } else {
             fs::copy(src, dst).map_err(|e| {
                 io::Error::new(
@@ -89,44 +92,78 @@ impl FileManager {
 
         Ok(())
     }
-}
 
-pub fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
-    if !dst.exists() {
-        fs::create_dir_all(dst)?;
-    }
+    pub fn compress_path(&self) -> std::io::Result<()> {
+        let src = Path::new(&self.file_path);
+        let dst = Path::new(&self.file_dest);
 
-    if !src.is_dir() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotADirectory,
-            format!("Source is not a directory: {:?}", src),
-        ));
-    }
-
-    if dst.starts_with(src) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("Destination {:?} cannot be inside source {:?}", dst, src),
-        ));
-    }
-
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let file_type = entry.file_type()?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-
-        if file_type.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
-        } else {
-            fs::copy(&src_path, &dst_path).map_err(|e| {
-                io::Error::new(
-                    e.kind(),
-                    format!("Failed to copy {:?} to {:?}: {}", src_path, dst_path, e)
-                )
-            })?;
+        // Ensure destination ends with .tar.gz
+        if !self.file_dest.ends_with(".tar.gz") {
+            return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+                "Destination must end with .tar.gz",
+            ));
         }
+
+        if !src.exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("Source path {:?} does not exist", src),
+            ));
+        }
+        
+        let tar_gz = File::create(dst)?;
+        let enc = GzEncoder::new(tar_gz, Compression::default());
+        let mut tar = Builder::new(enc);
+
+        if src.is_dir() {
+            tar.append_dir_all(".", src)?;
+        } else {
+            tar.append_path(src)?;
+        }
+
+        tar.finish()?;
+        Ok(())
     }
 
-    Ok(())
+    pub fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+        if !dst.exists() {
+            fs::create_dir_all(dst)?;
+        }
+
+        if !src.is_dir() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotADirectory,
+                format!("Source is not a directory: {:?}", src),
+            ));
+        }
+
+        if dst.starts_with(src) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Destination {:?} cannot be inside source {:?}", dst, src),
+            ));
+        }
+
+        for entry in fs::read_dir(src)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            let src_path = entry.path();
+            let dst_path = dst.join(entry.file_name());
+
+            if file_type.is_dir() {
+                Self::copy_dir_recursive(&src_path, &dst_path)?;
+            } else {
+                fs::copy(&src_path, &dst_path).map_err(|e| {
+                    io::Error::new(
+                        e.kind(),
+                        format!("Failed to copy {:?} to {:?}: {}", src_path, dst_path, e)
+                    )
+                })?;
+            }
+        }
+
+        Ok(())
+    }
+
 }
