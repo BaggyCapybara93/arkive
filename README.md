@@ -38,6 +38,11 @@ arkive copy <source> <destination>
 arkive copy <source> <destination> --recursive
 ```
 
+### Batch
+```bash
+arkive batch <batch_file>
+```
+
 ## License
 
 This project is licensed under the MIT License
