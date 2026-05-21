@@ -5,7 +5,7 @@ pub struct ParseArguments {
 pub enum Command {
     Help,
     Move { src: String, dest: String, recursive: bool },
-    Copy { src: String, dest: String },
+    Copy { src: String, dest: String, recursive: bool },
     Compress { src: String, dest: String },
 }
 
@@ -53,20 +53,12 @@ impl ParseArguments {
                     return Err("Copy command requires <src> <dest>".into());
                 }
 
+                let recursive = flags.contains(&"recursive".to_string());
+
                 Ok(Command::Copy {
                     src: paths[0].clone(),
                     dest: paths[1].clone(),
-                })
-            }
-
-            "compress" => {
-                if paths.len() < 2 {
-                    return Err("Compress command requires <src> <dest>".into());
-                }
-
-                Ok(Command::Compress {
-                    src: paths[0].clone(),
-                    dest: paths[1].clone(),
+                    recursive,
                 })
             }
 
