@@ -138,6 +138,9 @@ impl FileManager {
             ));
         }
 
+        let src = src.canonicalize()?;
+        let dst = dst.canonicalize().unwrap_or(dst.to_path_buf());
+
         if dst.starts_with(src) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
