@@ -62,6 +62,17 @@ impl ParseArguments {
                 })
             }
 
+            "compress" => {
+                if paths.len() < 2 {
+                    return Err("Compress command requires <src> <dest>".into());
+                }
+
+                Ok(Command::Compress {
+                    src: paths[0].clone(),
+                    dest: paths[1].clone(),
+                })
+            }
+
             _ => Err(format!("Unknown command: {}", command)),
         }
     }
