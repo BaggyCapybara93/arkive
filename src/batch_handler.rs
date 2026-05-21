@@ -17,21 +17,20 @@ impl Job {
     }
 
     pub fn execute(&self) -> std::io::Result<()> {
-        let fm = FileManager::new(
-            self.source.clone(),
-            self.destination.clone().unwrap_or_else(|| self.source.clone()),
-        );
+        let recursive = self.recursive.unwrap_or(false);
+        let dest = self.destination.clone().unwrap_or_else(|| self.source.clone());
+        let fm = FileManager::new(self.source.clone(), dest);
 
         match self.work_type.as_str() {
             "move" => {
-                if self.recursive.unwrap_or(false) {
+                if recursive {
                     fm.copy_path(true)?;
                     fm.delete_path(true)?;
                 } else {
                     fm.move_path()?;
                 }
             }
-            "copy" => fm.copy_path(self.recursive.unwrap_or(false))?,
+            "copy" => fm.copy_path(recursive)?,
             "compress" => fm.compress_path()?,
             _ => eprintln!("Unknown action: {}", self.work_type),
         }
@@ -52,14 +51,15 @@ impl BatchHandler {
         for job in &self.commands {
             println!("Running job: {} -> {:?}", job.work_type, job.destination);
             if let Err(e) = job.execute() {
-                eprintln!("Error executing job {:?}: {}", job, e);
+                eprintln!("Error executing job ({} from {}): {}", 
+    job.work_type, job.source, e);
             }
         }
     }
 
-    pub fn from_file(path: &str) -> std::io::Result<Self> {
-        let data = fs::read_to_string(path)?;
-        let commands: Vec<Job> = serde_json::from_str(&data)?;
-        Ok(BatchHandler::new(commands))
+    pub fn from_file(path: &str) -> anyhow::Result<Self> {
+        let data = fs::read_to_string(path).with_context(|| format!("Failed to read batch file: {}", path))?;
+        let commands: Vec<Job> = serde_json::from_str(&data).with_context(|| format!("Failed to parse batch file: {}", path))?;
+        Ok(Self::new(commands))
     }
 }
