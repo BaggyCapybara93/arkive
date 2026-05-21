@@ -142,7 +142,7 @@ impl FileManager {
         let source = src.canonicalize()?;
         let destination = dst.canonicalize().unwrap_or(dst.to_path_buf());
 
-        if destination.starts_with(source) {
+        if destination.starts_with(&source) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 format!("Destination {:?} cannot be inside source {:?}", destination, source),
