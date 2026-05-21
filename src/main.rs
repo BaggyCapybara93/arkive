@@ -17,7 +17,6 @@ fn main() {
             println!("Available commands:");
             println!("  move <src> <dest> [--recursive]");
             println!("  copy <src> <dest>");
-            println!("  delete <target> [--recursive]");
         }
 
         Command::Move { src, dest, recursive } => {
