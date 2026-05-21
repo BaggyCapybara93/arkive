@@ -7,6 +7,7 @@ pub enum Command {
     Move { src: String, dest: String, recursive: bool },
     Copy { src: String, dest: String, recursive: bool },
     Compress { src: String, dest: String },
+    Batch { file: String },
 }
 
 impl ParseArguments {
@@ -70,6 +71,16 @@ impl ParseArguments {
                 Ok(Command::Compress {
                     src: paths[0].clone(),
                     dest: paths[1].clone(),
+                })
+            }
+
+            "batch" => {
+                if paths.is_empty() {
+                    return Err("Batch command requires <file>".into());
+                }
+
+                Ok(Command::Batch {
+                    file: paths[0].clone(),
                 })
             }
 

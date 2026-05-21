@@ -1,9 +1,11 @@
 mod file_manager;
 mod arg_parser;
 mod crypto;
+mod batch_handler;
 
 use file_manager::FileManager;
 use arg_parser::Command;
+use batch_handler::BatchHandler;
 use std::env;
 
 fn main() {
@@ -42,6 +44,11 @@ fn main() {
         Command::Compress { src, dest } => {
             let fm = FileManager::new(src, dest);
             fm.compress_path().expect("Failed to compress file or directory");
+        }
+
+        Command::Batch { file } => {
+            let batch_handler = BatchHandler::from_file(&file).expect("Failed to read batch file");
+            batch_handler.run();
         }
     }
 }
