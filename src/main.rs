@@ -32,7 +32,10 @@ fn main() {
 
         Command::Copy { src, dest } => {
             let fm = FileManager::new(src, dest);
-            fm.copy_path(true).expect("Failed to copy file or directory");
+            if recursive {
+                fm.copy_path(true).expect("Failed to recursively copy directory");
+            }else{
+                fm.copy_path(true).expect("Failed to copy file or directory");            }
         }
 
         Command::Compress { src, dest } => {
