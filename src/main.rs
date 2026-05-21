@@ -1,21 +1,12 @@
 mod file_manager;
-mod arg_parser;
+mod cli;
 mod crypto;
 mod batch_handler;
 
 use file_manager::FileManager;
-use arg_parser::Command;
+use clap::Parser;
+use crate::cli::Command;
 use batch_handler::BatchHandler;
-use std::env;
-
-fn handle_help() -> Result<(), String> {
-    println!("Available commands:");
-    println!("  move <src> <dest> [--recursive]");
-    println!("  copy <src> <dest>");
-    println!("  compress <src> <dest>");
-    println!("  batch <batch_file>");
-    Ok(())
-}
 
 fn handle_move(src: &str, dest: &str, recursive: bool) -> Result<(), String> {
     let fm = FileManager::new(src.to_string(), dest.to_string());
@@ -52,7 +43,6 @@ fn handle_batch(file: &str) -> Result<(), String> {
 
 fn handler(cmd: Command) -> Result<(), String> {
     match cmd {
-        Command::Help => handle_help(),
         Command::Move { src, dest, recursive } => handle_move(&src, &dest, recursive),
         Command::Copy { src, dest, recursive } => handle_copy(&src, &dest, recursive),
         Command::Compress { src, dest } => handle_compress(&src, &dest),
@@ -61,10 +51,8 @@ fn handler(cmd: Command) -> Result<(), String> {
 }
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    let parser = arg_parser::ParseArguments::new(args);
-
-    let parsed = parser.parse().expect("Failed to parse arguments.");
+    let cli = crate::cli::CLI::parse();
+    let parsed = cli.command;
 
     handler(parsed).expect("Failed to execute command");
 }
