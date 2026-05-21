@@ -117,7 +117,8 @@ impl FileManager {
         let mut tar = Builder::new(enc);
 
         if src.is_dir() {
-            tar.append_dir_all(".", src)?;
+            let src_name = src.file_name().unwrap();
+            tar.append_dir_all(src_name, src)?;
         } else {
             tar.append_path(src)?;
         }
@@ -138,13 +139,13 @@ impl FileManager {
             ));
         }
 
-        let src = src.canonicalize()?;
-        let dst = dst.canonicalize().unwrap_or(dst.to_path_buf());
+        let source = src.canonicalize()?;
+        let destination = dst.canonicalize().unwrap_or(dst.to_path_buf());
 
-        if dst.starts_with(src) {
+        if destination.starts_with(source) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                format!("Destination {:?} cannot be inside source {:?}", dst, src),
+                format!("Destination {:?} cannot be inside source {:?}", destination, source),
             ));
         }
 
