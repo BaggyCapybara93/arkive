@@ -20,6 +20,7 @@ fn main() {
             println!("  move <src> <dest> [--recursive]");
             println!("  copy <src> <dest>");
             println!("  compress <src> <dest>");
+            println!("  batch <batch_file>");
         }
 
         Command::Move { src, dest, recursive } => {
