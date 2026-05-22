@@ -1,11 +1,24 @@
 use crate::crypto::hash_file;
 use std::fs;
-use std::io;
 use std::path::Path;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use tar::Builder;
+use thiserror::Error;
 use std::fs::File;
+
+//Error Handling
+#[derive(Error, Debug)]
+pub enum FileManagerError {
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("Hash mismatch after copy — file may be corrupted")]
+    HashMismatch,
+
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+}
 
 pub struct FileManager {
     pub file_path: String,
@@ -17,73 +30,61 @@ impl FileManager {
         FileManager { file_path, file_dest }
     }
 
-    pub fn move_path(&self) -> std::io::Result<()> {
+    pub fn move_path(&self) -> Result<(), FileManagerError> {
         let src = Path::new(&self.file_path);
         let dst = Path::new(&self.file_dest);
 
         // rename works for both files and directories
-        fs::rename(src, dst).map_err(|e| {
-            io::Error::new(
-                e.kind(),
-                format!("Failed to move {:?} to {:?}: {}", src, dst, e)
-            )
-        })?;
+        fs::rename(src, dst)?;
 
         Ok(())
     }
 
-    pub fn copy_path(&self, recursive: bool) -> std::io::Result<()> {
+    pub fn copy_path(&self, recursive: bool) -> Result<(), FileManagerError> {
         let src = Path::new(&self.file_path);
         let dst = Path::new(&self.file_dest);
 
         if !src.exists() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("Source path {:?} does not exist", src),
-            ));
+            return Err(FileManagerError::InvalidInput(format!(
+                "Source path {:?} does not exist",
+                src
+            )));
         }
 
         if src.is_dir() {
             if !recursive {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!("Use --recursive to copy directories: {:?}", src),
-                ));
+                return Err(FileManagerError::InvalidInput(format!(
+                    "Use --recursive to copy directories: {:?}",
+                    src
+                )));
             }
             Self::copy_dir_recursive(src, dst)?;
         } else {
-            fs::copy(src, dst).map_err(|e| {
-                io::Error::new(
-                    e.kind(),
-                    format!("Failed to copy {:?} to {:?}: {}", src, dst, e)
-                )
-            })?;
+            fs::copy(src, dst)?;
         }
 
+        // Verify file integrity
         if src.is_file() {
             let src_hash = hash_file(&self.file_path)?;
             let dst_hash = hash_file(&self.file_dest)?;
 
             if src_hash != dst_hash {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Hash mismatch after copy — file may be corrupted",
-                ));
+                return Err(FileManagerError::HashMismatch);
             }
         }
 
         Ok(())
     }
 
-    pub fn delete_path(&self, recursive: bool) -> std::io::Result<()> {
+    pub fn delete_path(&self, recursive: bool) -> Result<(), FileManagerError> {
         let src = Path::new(&self.file_path);
 
         if src.is_dir() {
             if !recursive {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!("Use --recursive to delete directories: {:?}", src),
-                ));
+                return Err(FileManagerError::InvalidInput(format!(
+                    "Use --recursive to delete directories: {:?}",
+                    src
+                )));
             }
             fs::remove_dir_all(src)?;
         } else {
@@ -93,23 +94,22 @@ impl FileManager {
         Ok(())
     }
 
-    pub fn compress_path(&self) -> std::io::Result<()> {
+    pub fn compress_path(&self) -> Result<(), FileManagerError> {
         let src = Path::new(&self.file_path);
         let dst = Path::new(&self.file_dest);
 
         // Ensure destination ends with .tar.gz
         if !self.file_dest.ends_with(".tar.gz") {
-            return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-                "Destination must end with .tar.gz",
+            return Err(FileManagerError::InvalidInput(
+                "Destination must end with .tar.gz".into(),
             ));
         }
 
         if !src.exists() {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("Source path {:?} does not exist", src),
-            ));
+            return Err(FileManagerError::InvalidInput(format!(
+                "Source path {:?} does not exist",
+                src
+            )));
         }
         
         let tar_gz = File::create(dst)?;
@@ -117,7 +117,8 @@ impl FileManager {
         let mut tar = Builder::new(enc);
 
         if src.is_dir() {
-            let src_name = src.file_name().unwrap();
+            let src_name = src.file_name()
+                .ok_or_else(|| FileManagerError::InvalidInput("Invalid directory name".into()))?;
             tar.append_dir_all(src_name, src)?;
         } else {
             tar.append_path(src)?;
@@ -127,26 +128,26 @@ impl FileManager {
         Ok(())
     }
 
-    pub fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), FileManagerError>{
+        if !src.is_dir() {
+            return Err(FileManagerError::InvalidInput(format!(
+                "Source is not a directory: {:?}",
+                src
+            )));
+        }
+
         if !dst.exists() {
             fs::create_dir_all(dst)?;
         }
 
-        if !src.is_dir() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::NotADirectory,
-                format!("Source is not a directory: {:?}", src),
-            ));
-        }
-
         let source = src.canonicalize()?;
-        let destination = dst.canonicalize().unwrap_or(dst.to_path_buf());
+        let destination = dst.canonicalize().unwrap_or_else(|_| dst.to_path_buf());
 
         if destination.starts_with(&source) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("Destination {:?} cannot be inside source {:?}", destination, source),
-            ));
+            return Err(FileManagerError::InvalidInput(format!(
+                "Destination {:?} cannot be inside source {:?}",
+                destination, source
+            )));
         }
 
         for entry in fs::read_dir(src)? {
@@ -158,12 +159,7 @@ impl FileManager {
             if file_type.is_dir() {
                 Self::copy_dir_recursive(&src_path, &dst_path)?;
             } else {
-                fs::copy(&src_path, &dst_path).map_err(|e| {
-                    io::Error::new(
-                        e.kind(),
-                        format!("Failed to copy {:?} to {:?}: {}", src_path, dst_path, e)
-                    )
-                })?;
+                fs::copy(&src_path, &dst_path)?;
             }
         }
 

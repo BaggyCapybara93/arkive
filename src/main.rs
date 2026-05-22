@@ -6,42 +6,58 @@ mod batch_handler;
 use file_manager::FileManager;
 use clap::Parser;
 use crate::cli::Command;
+use thiserror::Error;
 use batch_handler::BatchHandler;
 
-fn handle_move(src: &str, dest: &str, recursive: bool) -> Result<(), String> {
-    let fm = FileManager::new(src.to_string(), dest.to_string());
+#[derive(Error, Debug)]
+pub enum AppError {
+    #[error("File operation failed: {0}")]
+    FileError(#[from] std::io::Error),
+
+    #[error("Batch error: {0}")]
+    BatchError(#[from] batch_handler::BatchError),
+
+    #[error("File manager error: {0}")]
+    FileManager(#[from] crate::file_manager::FileManagerError),
+
+    #[error("Unexpected error: {0}")]
+    Other(String),
+}
+
+fn handle_move(src: &str, dest: &str, recursive: bool) ->  Result<(), AppError> {
+    let fm = FileManager::new(src.into(), dest.into());
     if recursive {
-        fm.copy_path(true).map_err(|e| format!("Failed to recursively copy directory: {}", e))?;
-        fm.delete_path(true).map_err(|e| format!("Failed to delete original directory: {}", e))?;
+        fm.copy_path(true)?;
+        fm.delete_path(true)?;
     } else {
-        fm.move_path().map_err(|e| format!("Failed to move file or directory: {}", e))?;
+        fm.move_path()?;
     }
     Ok(())
 }
 
-fn handle_copy(src: &str, dest: &str, recursive: bool) -> Result<(), String> {
-    let fm = FileManager::new(src.to_string(), dest.to_string());
+fn handle_copy(src: &str, dest: &str, recursive: bool) -> Result<(), AppError> {
+    let fm = FileManager::new(src.into(), dest.into());
     if recursive {
-        fm.copy_path(true).map_err(|e| format!("Failed to recursively copy directory: {}", e))?;
+        fm.copy_path(true)?;
     } else {
-        fm.copy_path(false).map_err(|e| format!("Failed to copy file or directory: {}", e))?;
+        fm.copy_path(false)?;
     }
     Ok(())
 }
 
-fn handle_compress(src: &str, dest: &str) -> Result<(), String> {
-    let fm = FileManager::new(src.to_string(), dest.to_string());
-    fm.compress_path().map_err(|e| format!("Failed to compress file or directory: {}", e))?;
+fn handle_compress(src: &str, dest: &str) -> Result<(), AppError> {
+    let fm = FileManager::new(src.into(), dest.into());
+    fm.compress_path()?;
     Ok(())
 }
 
-fn handle_batch(file: &str) -> Result<(), String> {
-    let batch_handler = BatchHandler::from_file(file).map_err(|e| format!("Failed to read batch file: {}", e))?;
-    batch_handler.run();
+fn handle_batch(file: &str) -> Result<(), AppError> {
+    let batch_handler = BatchHandler::from_file(file)?;
+    batch_handler.run()?;
     Ok(())
 }
 
-fn handler(cmd: Command) -> Result<(), String> {
+fn handler(cmd: Command) -> Result<(), AppError> {
     match cmd {
         Command::Move { src, dest, recursive } => handle_move(&src, &dest, recursive),
         Command::Copy { src, dest, recursive } => handle_copy(&src, &dest, recursive),
