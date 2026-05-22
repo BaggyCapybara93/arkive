@@ -2,8 +2,80 @@ use serde::Deserialize;
 use serde_json;
 use crate::file_manager::FileManager;
 use std::fs;
+use std::{
+    sync::{mpsc, Arc, Mutex},
+    thread,
+};
 
-#[derive(Debug, Deserialize)]
+//Multithreading
+enum ThreadMessage {
+    Job(Job),
+    Shutdown,
+}
+
+pub struct Worker {
+    pub id: usize,
+    pub handle: thread::JoinHandle<()>,
+}
+
+pub struct ThreadPool {
+    workers: Vec<Worker>,
+    sender: mpsc::Sender<ThreadMessage>,
+}
+
+impl ThreadPool {
+    pub fn new(size: usize) -> Self {
+        let (sender, receiver) = mpsc::channel::<ThreadMessage>();
+        let receiver = Arc::new(Mutex::new(receiver));
+
+        let mut workers = Vec::with_capacity(size);
+
+        for id in 0..size {
+            let receiver = Arc::clone(&receiver);
+
+            let handle = thread::spawn(move || {
+                loop {
+                    let message = receiver.lock().unwrap().recv();
+                    match message {
+                        Ok(ThreadMessage::Job(job)) => {
+                            println!("Worker {id} executing job");
+                            let _ = job.execute();
+                        }
+                        Ok(ThreadMessage::Shutdown) => {
+                            println!("Worker {id} shutting down");
+                            break;
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+
+            workers.push(Worker { id, handle });
+        }
+
+        ThreadPool { workers, sender }
+    }
+
+    pub fn join(self) {
+        for _ in &self.workers {
+            self.sender.send(ThreadMessage::Shutdown).unwrap();
+        }
+
+        for worker in self.workers {
+            let _ = worker.handle.join();
+        }
+    }
+
+    pub fn add_job(&self, job: Job) {
+        self.sender
+            .send(ThreadMessage::Job(job))
+            .expect("Failed to send job to thread pool");
+    }
+
+}
+
+
+#[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum WorkType {
     Move,
@@ -11,7 +83,7 @@ pub enum WorkType {
     Compress,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Job {
     pub work_type: WorkType,
     pub source: String,
@@ -51,13 +123,22 @@ impl BatchHandler {
     }
 
     pub fn run(&self) {
+        let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+
+        // Use half of the available threads to prevent overwhelming the system
+        let max_threads = std::cmp::max(1, threads / 2);
+
+        //Prevent adding more threads than jobs in batch file
+        let job_count = self.commands.len();
+        let worker_count = std::cmp::min(max_threads, job_count.max(1));
+
+        let pool = ThreadPool::new(worker_count);
+
         for job in &self.commands {
             println!("Running job: {:?} -> {:?}", job.work_type, job.destination);
-            if let Err(e) = job.execute() {
-                eprintln!("Error executing job ({:?} from {}): {}", 
-                job.work_type, job.source, e);
-            }
+            pool.add_job(job.clone());
         }
+        pool.join();
     }
 
     pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
