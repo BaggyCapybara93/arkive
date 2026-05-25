@@ -2,27 +2,13 @@ mod file_manager;
 mod cli;
 mod crypto;
 mod batch_handler;
+mod error;
 
 use file_manager::FileManager;
 use clap::Parser;
 use crate::cli::Command;
-use thiserror::Error;
+use crate::error::AppError;
 use batch_handler::BatchHandler;
-
-#[derive(Error, Debug)]
-pub enum AppError {
-    #[error("File operation failed: {0}")]
-    FileError(#[from] std::io::Error),
-
-    #[error("Batch error: {0}")]
-    BatchError(#[from] batch_handler::BatchError),
-
-    #[error("File manager error: {0}")]
-    FileManager(#[from] crate::file_manager::FileManagerError),
-
-    #[error("Unexpected error: {0}")]
-    Other(String),
-}
 
 fn handle_move(src: &str, dest: &str, recursive: bool) ->  Result<(), AppError> {
     let fm = FileManager::new(src.into(), dest.into());
