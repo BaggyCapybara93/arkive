@@ -1,4 +1,7 @@
 use clap::{Parser, Subcommand};
+use crate::file_manager::FileManager;
+use crate::batch_handler::BatchHandler;
+use crate::error::AppError;
 
 #[derive(Parser)]
 #[command(
@@ -51,4 +54,46 @@ pub enum Command {
         /// Path to batch file
         file: String,
     },
+}
+
+fn handle_move(src: &str, dest: &str, recursive: bool) ->  Result<(), AppError> {
+    let fm = FileManager::new(src.into(), dest.into());
+    if recursive {
+        fm.copy_path(true)?;
+        fm.delete_path(true)?;
+    } else {
+        fm.move_path()?;
+    }
+    Ok(())
+}
+
+fn handle_copy(src: &str, dest: &str, recursive: bool) -> Result<(), AppError> {
+    let fm = FileManager::new(src.into(), dest.into());
+    if recursive {
+        fm.copy_path(true)?;
+    } else {
+        fm.copy_path(false)?;
+    }
+    Ok(())
+}
+
+fn handle_compress(src: &str, dest: &str) -> Result<(), AppError> {
+    let fm = FileManager::new(src.into(), dest.into());
+    fm.compress_path()?;
+    Ok(())
+}
+
+fn handle_batch(file: &str) -> Result<(), AppError> {
+    let batch_handler = BatchHandler::from_file(file)?;
+    batch_handler.run()?;
+    Ok(())
+}
+
+pub fn cli_handler(cmd: Command) -> Result<(), AppError> {
+    match cmd {
+        Command::Move { src, dest, recursive } => handle_move(&src, &dest, recursive),
+        Command::Copy { src, dest, recursive } => handle_copy(&src, &dest, recursive),
+        Command::Compress { src, dest } => handle_compress(&src, &dest),
+        Command::Batch { file } => handle_batch(&file),
+    }
 }
