@@ -1,5 +1,7 @@
 use crate::crypto::hash_file;
 use std::fs;
+use parking_lot::Mutex;
+use std::sync::Arc;
 use std::path::Path;
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -23,14 +25,20 @@ pub enum FileManagerError {
 pub struct FileManager {
     pub file_path: String,
     pub file_dest: String,
+    lock: Mutex<()>,
 }
 
 impl FileManager {
     pub fn new(file_path: String, file_dest: String) -> Self {
-        FileManager { file_path, file_dest }
+        FileManager { 
+            file_path, 
+            file_dest,
+            lock: Mutex::new(()),
+        }
     }
 
     pub fn move_path(&self) -> Result<(), FileManagerError> {
+        let _guard = self.lock.lock();
         let src = Path::new(&self.file_path);
         let dst = Path::new(&self.file_dest);
 
@@ -41,6 +49,7 @@ impl FileManager {
     }
 
     pub fn copy_path(&self, recursive: bool) -> Result<(), FileManagerError> {
+        let _guard = self.lock.lock();
         let src = Path::new(&self.file_path);
         let dst = Path::new(&self.file_dest);
 
@@ -77,6 +86,7 @@ impl FileManager {
     }
 
     pub fn delete_path(&self, recursive: bool) -> Result<(), FileManagerError> {
+        
         let src = Path::new(&self.file_path);
 
         if src.is_dir() {
@@ -95,6 +105,7 @@ impl FileManager {
     }
 
     pub fn compress_path(&self) -> Result<(), FileManagerError> {
+        let _guard = self.lock.lock();
         let src = Path::new(&self.file_path);
         let dst = Path::new(&self.file_dest);
 
