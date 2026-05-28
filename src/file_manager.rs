@@ -86,7 +86,7 @@ impl FileManager {
     }
 
     pub fn delete_path(&self, recursive: bool) -> Result<(), FileManagerError> {
-        
+        let _guard = self.lock.lock();
         let src = Path::new(&self.file_path);
 
         if src.is_dir() {
