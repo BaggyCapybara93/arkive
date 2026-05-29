@@ -1,4 +1,8 @@
-use crate::crypto::hash_file;
+use crate::file_validation::handlers::{
+    ensure_not_nested,
+    valid_directory,
+    validate_hash
+};
 use std::fs;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -42,6 +46,8 @@ impl FileManager {
         let src = Path::new(&self.file_path);
         let dst = Path::new(&self.file_dest);
 
+        valid_directory(src)?;
+
         // rename works for both files and directories
         fs::rename(src, dst)?;
 
@@ -53,12 +59,7 @@ impl FileManager {
         let src = Path::new(&self.file_path);
         let dst = Path::new(&self.file_dest);
 
-        if !src.exists() {
-            return Err(FileManagerError::InvalidInput(format!(
-                "Source path {:?} does not exist",
-                src
-            )));
-        }
+        valid_directory(src)?;
 
         if src.is_dir() {
             if !recursive {
@@ -74,12 +75,7 @@ impl FileManager {
 
         // Verify file integrity
         if src.is_file() {
-            let src_hash = hash_file(&self.file_path)?;
-            let dst_hash = hash_file(&self.file_dest)?;
-
-            if src_hash != dst_hash {
-                return Err(FileManagerError::HashMismatch);
-            }
+            validate_hash(src, dst)?;
         }
 
         Ok(())
@@ -88,6 +84,8 @@ impl FileManager {
     pub fn delete_path(&self, recursive: bool) -> Result<(), FileManagerError> {
         let _guard = self.lock.lock();
         let src = Path::new(&self.file_path);
+
+        valid_directory(src)?;
 
         if src.is_dir() {
             if !recursive {
@@ -116,12 +114,7 @@ impl FileManager {
             ));
         }
 
-        if !src.exists() {
-            return Err(FileManagerError::InvalidInput(format!(
-                "Source path {:?} does not exist",
-                src
-            )));
-        }
+        valid_directory(src)?;
         
         let tar_gz = File::create(dst)?;
         let enc = GzEncoder::new(tar_gz, Compression::default());
@@ -140,26 +133,9 @@ impl FileManager {
     }
 
     pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), FileManagerError>{
-        if !src.is_dir() {
-            return Err(FileManagerError::InvalidInput(format!(
-                "Source is not a directory: {:?}",
-                src
-            )));
-        }
+        valid_directory(src)?;
 
-        if !dst.exists() {
-            fs::create_dir_all(dst)?;
-        }
-
-        let source = src.canonicalize()?;
-        let destination = dst.canonicalize().unwrap_or_else(|_| dst.to_path_buf());
-
-        if destination.starts_with(&source) {
-            return Err(FileManagerError::InvalidInput(format!(
-                "Destination {:?} cannot be inside source {:?}",
-                destination, source
-            )));
-        }
+        ensure_not_nested(src, dst)?;
 
         for entry in fs::read_dir(src)? {
             let entry = entry?;

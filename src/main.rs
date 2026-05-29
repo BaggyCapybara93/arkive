@@ -1,6 +1,6 @@
 mod file_manager;
+mod file_validation;
 mod cli;
-mod crypto;
 mod batch_handler;
 mod error;
 
