@@ -3,28 +3,16 @@ use crate::file_validation::handlers::{
     valid_directory,
     validate_hash
 };
+
+use super::error::FileManagerError;
+
 use std::fs;
 use parking_lot::Mutex;
-use std::sync::Arc;
 use std::path::Path;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use tar::Builder;
-use thiserror::Error;
 use std::fs::File;
-
-//Error Handling
-#[derive(Error, Debug)]
-pub enum FileManagerError {
-    #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
-
-    #[error("Hash mismatch after copy — file may be corrupted")]
-    HashMismatch,
-
-    #[error("Invalid input: {0}")]
-    InvalidInput(String),
-}
 
 pub struct FileManager {
     pub file_path: String,
