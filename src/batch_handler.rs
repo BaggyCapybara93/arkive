@@ -132,11 +132,13 @@ pub struct Job {
     pub source: String,
     pub destination: Option<String>,
     pub recursive: Option<bool>,
+    pub to_trash: Option<bool>,
 }
 
 impl Job {
     pub fn execute(&self) -> Result<(), FileManagerError> {
         let recursive = self.recursive.unwrap_or(false);
+        let trash = self.to_trash.unwrap_or(false);
         let dest = self.destination.clone().unwrap_or_else(|| self.source.clone());
         let fm = FileManager::new(self.source.clone(), dest);
 
@@ -144,7 +146,11 @@ impl Job {
             WorkType::Move => {
                 if recursive {
                     fm.copy_path(true)?;
-                    fm.delete_path(self.source.clone(), true)?;
+                    if trash {
+                        fm.delete_path(self.source.clone(), true, true)?;
+                    }else{
+                        fm.delete_path(self.source.clone(), true, false)?;
+                    }
                 } else {
                     fm.move_path()?;
                 }

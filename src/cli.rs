@@ -59,6 +59,9 @@ pub enum Command {
     Deduplicate {
         /// Path of folder
         path: String,
+
+        #[arg(long, help = "Keep deleted files in arkive trash")]
+        trash: bool,
     },
 }
 
@@ -66,7 +69,7 @@ fn handle_move(src: &str, dest: &str, recursive: bool) ->  Result<(), AppError> 
     let fm = FileManager::new(src.into(), dest.into());
     if recursive {
         fm.copy_path(true)?;
-        fm.delete_path(src.to_string(), true)?;
+        fm.delete_path(src.to_string(), true, false)?;
     } else {
         fm.move_path()?;
     }
@@ -95,9 +98,9 @@ fn handle_batch(file: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-fn handle_deduplicate(path: &str) -> Result<(), AppError>{
+fn handle_deduplicate(path: &str, to_trash: bool) -> Result<(), AppError>{
    let fm = FileManager::new(path.into(), "".to_string());
-   fm.folder_deduplication()?;
+   fm.folder_deduplication(to_trash)?;
     Ok(())
 }
 
@@ -107,6 +110,6 @@ pub fn cli_handler(cmd: Command) -> Result<(), AppError> {
         Command::Copy { src, dest, recursive } => handle_copy(&src, &dest, recursive),
         Command::Compress { src, dest } => handle_compress(&src, &dest),
         Command::Batch { file } => handle_batch(&file),
-        Command::Deduplicate { path } =>  handle_deduplicate(&path),
+        Command::Deduplicate { path, trash } =>  handle_deduplicate(&path, trash),
     }
 }

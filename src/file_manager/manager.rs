@@ -14,6 +14,7 @@ use std::path::Path;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use tar::Builder;
+use std::path::PathBuf;
 use std::fs::File;
 
 pub struct FileManager {
@@ -72,12 +73,30 @@ impl FileManager {
     }
 
     //Move this to its own utillity module later
-    pub fn delete_path(&self, path: String, recursive: bool) -> Result<(), FileManagerError> {
+    pub fn delete_path(&self, path: String, recursive: bool, to_trash: bool) -> Result<(), FileManagerError> {
         let _guard = self.lock.lock();
         let src = Path::new(&path);
 
-        valid_directory(src)?;
+        if src.is_dir(){
+            valid_directory(src)?;
+        }
 
+        if to_trash {
+            let trash = Self::trash_dir()?;
+
+            // Extract filename
+            let file_name = src.file_name()
+                .ok_or_else(|| FileManagerError::InvalidInput("Invalid file name".into()))?;
+
+            // Build destination inside trash
+            let dst = trash.join(file_name);
+
+            // Move instead of delete
+            fs::rename(src, dst)?;
+            return Ok(());
+        }
+
+        // Normal delete
         if src.is_dir() {
             if !recursive {
                 return Err(FileManagerError::InvalidInput(format!(
@@ -144,7 +163,7 @@ impl FileManager {
         Ok(())
     }
 
-    pub fn folder_deduplication(&self) -> Result<(), FileManagerError> {
+    pub fn folder_deduplication(&self, to_trash: bool) -> Result<(), FileManagerError> {
         let src = Path::new(&self.file_path);
 
         valid_directory(src)?;
@@ -172,7 +191,7 @@ impl FileManager {
 
                 if let Some(original) = seen.get(&hash) {
                     // Duplicate → delete it
-                    fs::remove_file(&path)?;
+                    self.delete_path(path.to_string_lossy().to_string(), true, to_trash)?;
                     println!("Removed duplicate: {:?} (original: {:?})", path, original);
                 } else {
                     seen.insert(hash, path_str.to_string());
@@ -181,5 +200,17 @@ impl FileManager {
         }
 
         Ok(())
+    }
+
+    //Change this to be more customizable 
+    pub fn trash_dir() -> Result<PathBuf, FileManagerError> {
+        let cwd = std::env::current_dir()?;
+        let trash = cwd.join("arkive_trash");
+
+        if !trash.exists() {
+            std::fs::create_dir_all(&trash)?;
+        }
+
+        Ok(trash)
     }
 }
