@@ -37,7 +37,7 @@ impl FileManager {
         let src = Path::new(&self.file_path);
         let dst = Path::new(&self.file_dest);
 
-        valid_directory(src)?;
+        if src.is_dir(){valid_directory(src)?;}
 
         // rename works for both files and directories
         fs::rename(src, dst)?;
@@ -50,9 +50,8 @@ impl FileManager {
         let src = Path::new(&self.file_path);
         let dst = Path::new(&self.file_dest);
 
-        valid_directory(src)?;
-
         if src.is_dir() {
+            valid_directory(src)?;
             if !recursive {
                 return Err(FileManagerError::InvalidInput(format!(
                     "Use --recursive to copy directories: {:?}",
@@ -77,9 +76,7 @@ impl FileManager {
         let _guard = self.lock.lock();
         let src = Path::new(&path);
 
-        if src.is_dir(){
-            valid_directory(src)?;
-        }
+        if src.is_dir() {valid_directory(src)?;}
 
         if to_trash {
             let trash = Self::trash_dir()?;
@@ -124,7 +121,7 @@ impl FileManager {
             ));
         }
 
-        valid_directory(src)?;
+        if src.is_dir() {valid_directory(src)?;}
         
         let tar_gz = File::create(dst)?;
         let enc = GzEncoder::new(tar_gz, Compression::default());
@@ -135,7 +132,8 @@ impl FileManager {
                 .ok_or_else(|| FileManagerError::InvalidInput("Invalid directory name".into()))?;
             tar.append_dir_all(src_name, src)?;
         } else {
-            let name = src.file_name()?;
+            let name = src.file_name()
+                .ok_or_else(|| FileManagerError::InvalidInput("Invalid file name".into()))?;;
             tar.append_path_with_name(src, name)?;
         }
 
@@ -144,7 +142,7 @@ impl FileManager {
     }
 
     pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), FileManagerError>{
-        valid_directory(src)?;
+        if src.is_dir() {valid_directory(src)?;}
 
         ensure_not_nested(src, dst)?;
 
@@ -167,7 +165,7 @@ impl FileManager {
     pub fn folder_deduplication(&self, to_trash: bool) -> Result<(), FileManagerError> {
         let src = Path::new(&self.file_path);
 
-        valid_directory(src)?;
+        if src.is_dir() {valid_directory(src)?;}
 
         if !src.is_dir() {
             return Err(FileManagerError::InvalidInput(
