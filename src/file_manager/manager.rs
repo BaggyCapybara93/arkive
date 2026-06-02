@@ -135,7 +135,8 @@ impl FileManager {
                 .ok_or_else(|| FileManagerError::InvalidInput("Invalid directory name".into()))?;
             tar.append_dir_all(src_name, src)?;
         } else {
-            tar.append_path(src)?;
+            let name = src.file_name()?;
+            tar.append_path_with_name(src, name)?;
         }
 
         tar.finish()?;
