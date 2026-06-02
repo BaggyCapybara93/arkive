@@ -71,9 +71,10 @@ impl FileManager {
         Ok(())
     }
 
-    pub fn delete_path(&self, recursive: bool) -> Result<(), FileManagerError> {
+    //Move this to its own utillity module later
+    pub fn delete_path(&self, path: String, recursive: bool) -> Result<(), FileManagerError> {
         let _guard = self.lock.lock();
-        let src = Path::new(&self.file_path);
+        let src = Path::new(&path);
 
         valid_directory(src)?;
 

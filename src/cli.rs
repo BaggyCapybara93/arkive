@@ -66,7 +66,7 @@ fn handle_move(src: &str, dest: &str, recursive: bool) ->  Result<(), AppError> 
     let fm = FileManager::new(src.into(), dest.into());
     if recursive {
         fm.copy_path(true)?;
-        fm.delete_path(true)?;
+        fm.delete_path(src.to_string(), true)?;
     } else {
         fm.move_path()?;
     }

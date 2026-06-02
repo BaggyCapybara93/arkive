@@ -144,7 +144,7 @@ impl Job {
             WorkType::Move => {
                 if recursive {
                     fm.copy_path(true)?;
-                    fm.delete_path(true)?;
+                    fm.delete_path(self.source.clone(), true)?;
                 } else {
                     fm.move_path()?;
                 }
