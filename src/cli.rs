@@ -54,6 +54,12 @@ pub enum Command {
         /// Path to batch file
         file: String,
     },
+
+    ///Scan a directory for files with the same hash
+    Deduplicate {
+        /// Path of folder
+        path: String,
+    },
 }
 
 fn handle_move(src: &str, dest: &str, recursive: bool) ->  Result<(), AppError> {
@@ -89,11 +95,18 @@ fn handle_batch(file: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+fn handle_deduplicate(path: &str) -> Result<(), AppError>{
+   let fm = FileManager::new(path.into(), "".to_string());
+   fm.folder_deduplication()?;
+    Ok(())
+}
+
 pub fn cli_handler(cmd: Command) -> Result<(), AppError> {
     match cmd {
         Command::Move { src, dest, recursive } => handle_move(&src, &dest, recursive),
         Command::Copy { src, dest, recursive } => handle_copy(&src, &dest, recursive),
         Command::Compress { src, dest } => handle_compress(&src, &dest),
         Command::Batch { file } => handle_batch(&file),
+        Command::Deduplicate { path } =>  handle_deduplicate(&path),
     }
 }

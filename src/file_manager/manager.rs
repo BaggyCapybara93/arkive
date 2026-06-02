@@ -3,10 +3,12 @@ use crate::file_validation::handlers::{
     valid_directory,
     validate_hash
 };
+use crate::file_validation::hash::hash_file;
 
 use super::error::FileManagerError;
 
 use std::fs;
+use std::collections::HashMap;
 use parking_lot::Mutex;
 use std::path::Path;
 use flate2::write::GzEncoder;
@@ -141,4 +143,42 @@ impl FileManager {
         Ok(())
     }
 
+    pub fn folder_deduplication(&self) -> Result<(), FileManagerError> {
+        let src = Path::new(&self.file_path);
+
+        valid_directory(src)?;
+
+        if !src.is_dir() {
+            return Err(FileManagerError::InvalidInput(
+                "Deduplication requires a directory".into(),
+            ));
+        }
+
+        let mut seen: HashMap<String, String> = HashMap::new();
+
+        for entry in fs::read_dir(src)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.is_file() {
+                // Convert path to &str safely
+                let path_str = path.to_str().ok_or_else(|| {
+                    FileManagerError::InvalidInput("Invalid UTF-8 file path".into())
+                })?;
+
+                // Compute hash
+                let hash = hash_file(path_str)?;
+
+                if let Some(original) = seen.get(&hash) {
+                    // Duplicate → delete it
+                    fs::remove_file(&path)?;
+                    println!("Removed duplicate: {:?} (original: {:?})", path, original);
+                } else {
+                    seen.insert(hash, path_str.to_string());
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
