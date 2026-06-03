@@ -14,3 +14,24 @@ pub fn trash_dir() -> Result<PathBuf, FileManagerError> {
 
     Ok(trash)
 }
+
+pub fn empty_trash() -> Result<(), FileManagerError> {
+    let trash = trash_dir()?;
+
+    if trash.exists() {
+        std::fs::remove_dir_all(&trash)?;
+        std::fs::create_dir_all(&trash)?;
+    }
+
+    Ok(())
+}
+
+pub fn list_trash() -> Result<(), FileManagerError> {
+    let trash = trash_dir()?;
+
+    for entry in std::fs::read_dir(trash)? {
+        let entry = entry?;
+        println!("{:?}", entry.path());
+    }
+    Ok(())
+}

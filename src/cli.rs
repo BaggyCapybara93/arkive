@@ -1,7 +1,8 @@
 use clap::{Parser, Subcommand};
-use crate::file_manager::FileManager;
 use crate::batch_handler::BatchHandler;
 use crate::error::AppError;
+use crate::file_manager::trash;
+use crate::file_manager::FileManager;
 
 #[derive(Parser)]
 #[command(
@@ -55,7 +56,13 @@ pub enum Command {
         file: String,
     },
 
-    ///Scan a directory for files with the same hash
+    /// Empty the arkive trash directory
+    EmptyTrash,
+
+    /// List contents of the arkive trash directory
+    ListTrash,
+
+    /// Scan a directory for files with the same hash
     Deduplicate {
         /// Path of folder
         path: String,
@@ -98,9 +105,19 @@ fn handle_batch(file: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-fn handle_deduplicate(path: &str, to_trash: bool) -> Result<(), AppError>{
-   let fm = FileManager::new(path, "");
-   fm.folder_deduplication(to_trash)?;
+fn handle_deduplicate(path: &str, to_trash: bool) -> Result<(), AppError> {
+    let fm = FileManager::new(path, "");
+    fm.folder_deduplication(to_trash)?;
+    Ok(())
+}
+
+fn handle_empty_trash() -> Result<(), AppError> {
+    trash::empty_trash()?;
+    Ok(())
+}
+
+fn handle_list_trash() -> Result<(), AppError> {
+    trash::list_trash()?;
     Ok(())
 }
 
@@ -110,6 +127,8 @@ pub fn cli_handler(cmd: Command) -> Result<(), AppError> {
         Command::Copy { src, dest, recursive } => handle_copy(&src, &dest, recursive),
         Command::Compress { src, dest } => handle_compress(&src, &dest),
         Command::Batch { file } => handle_batch(&file),
-        Command::Deduplicate { path, trash } =>  handle_deduplicate(&path, trash),
+        Command::EmptyTrash => handle_empty_trash(),
+        Command::ListTrash => handle_list_trash(),
+        Command::Deduplicate { path, trash } => handle_deduplicate(&path, trash),
     }
 }
