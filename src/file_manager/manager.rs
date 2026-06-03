@@ -133,7 +133,7 @@ impl FileManager {
             tar.append_dir_all(src_name, src)?;
         } else {
             let name = src.file_name()
-                .ok_or_else(|| FileManagerError::InvalidInput("Invalid file name".into()))?;;
+                .ok_or_else(|| FileManagerError::InvalidInput("Invalid file name".into()))?;
             tar.append_path_with_name(src, name)?;
         }
 

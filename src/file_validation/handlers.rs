@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::Path;
 use crate::file_manager::FileManagerError;
 use crate::file_validation::hash::hash_file;
