@@ -35,7 +35,6 @@ enum ThreadResult {
 }
 
 pub struct Worker {
-    pub id: usize,
     pub handle: thread::JoinHandle<()>,
 }
 
@@ -85,7 +84,7 @@ impl ThreadPool {
                 }
             });
 
-            workers.push(Worker { id, handle });
+            workers.push(Worker { handle });
         }
 
         ThreadPool { workers, sender, result_receiver }
