@@ -66,10 +66,10 @@ pub enum Command {
 }
 
 fn handle_move(src: &str, dest: &str, recursive: bool) ->  Result<(), AppError> {
-    let fm = FileManager::new(src.into(), dest.into());
+    let fm = FileManager::new(src, dest);
     if recursive {
         fm.copy_path(true)?;
-        fm.delete_path(src.to_string(), true, false)?;
+        fm.delete_path(src, true, false)?;
     } else {
         fm.move_path()?;
     }
@@ -77,7 +77,7 @@ fn handle_move(src: &str, dest: &str, recursive: bool) ->  Result<(), AppError> 
 }
 
 fn handle_copy(src: &str, dest: &str, recursive: bool) -> Result<(), AppError> {
-    let fm = FileManager::new(src.into(), dest.into());
+    let fm = FileManager::new(src, dest);
     if recursive {
         fm.copy_path(true)?;
     } else {
@@ -87,7 +87,7 @@ fn handle_copy(src: &str, dest: &str, recursive: bool) -> Result<(), AppError> {
 }
 
 fn handle_compress(src: &str, dest: &str) -> Result<(), AppError> {
-    let fm = FileManager::new(src.into(), dest.into());
+    let fm = FileManager::new(src, dest);
     fm.compress_path()?;
     Ok(())
 }
@@ -99,7 +99,7 @@ fn handle_batch(file: &str) -> Result<(), AppError> {
 }
 
 fn handle_deduplicate(path: &str, to_trash: bool) -> Result<(), AppError>{
-   let fm = FileManager::new(path.into(), "".to_string());
+   let fm = FileManager::new(path, "");
    fm.folder_deduplication(to_trash)?;
     Ok(())
 }

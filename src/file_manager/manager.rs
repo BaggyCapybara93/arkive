@@ -16,24 +16,24 @@ use std::path::PathBuf;
 use std::fs::File;
 
 pub struct FileManager {
-    pub file_path: String,
-    pub file_dest: String,
+    pub file_path: PathBuf,
+    pub file_dest: PathBuf,
     lock: Mutex<()>,
 }
 
 impl FileManager {
-    pub fn new(file_path: String, file_dest: String) -> Self {
+    pub fn new(file_path: impl Into<PathBuf>, file_dest: impl Into<PathBuf>) -> Self {
         FileManager { 
-            file_path, 
-            file_dest,
+            file_path: file_path.into(), 
+            file_dest: file_dest.into(),
             lock: Mutex::new(()),
         }
     }
 
     pub fn move_path(&self) -> Result<(), FileManagerError> {
         let _guard = self.lock.lock();
-        let src = Path::new(&self.file_path);
-        let dst = Path::new(&self.file_dest);
+        let src = self.file_path.as_path();
+        let dst = self.file_dest.as_path();
 
         if src.is_dir(){valid_directory(src)?;}
 
@@ -45,8 +45,8 @@ impl FileManager {
 
     pub fn copy_path(&self, recursive: bool) -> Result<(), FileManagerError> {
         let _guard = self.lock.lock();
-        let src = Path::new(&self.file_path);
-        let dst = Path::new(&self.file_dest);
+        let src = self.file_path.as_path();
+        let dst = self.file_dest.as_path();
 
         if src.is_dir() {
             valid_directory(src)?;
@@ -70,38 +70,39 @@ impl FileManager {
     }
 
     //Move this to its own utillity module later
-    pub fn delete_path(&self, path: String, recursive: bool, to_trash: bool) -> Result<(), FileManagerError> {
+    pub fn delete_path(&self, path: impl Into<PathBuf>, recursive: bool, to_trash: bool) -> Result<(), FileManagerError> {
         let _guard = self.lock.lock();
-        let src = Path::new(&path);
+        let src = path.into();
+        let src_path = src.as_path();
 
-        if src.is_dir() {valid_directory(src)?;}
+        if src_path.is_dir() {valid_directory(src_path)?;}
 
         if to_trash {
             let trash = Self::trash_dir()?;
 
             // Extract filename
-            let file_name = src.file_name()
+            let file_name = src_path.file_name()
                 .ok_or_else(|| FileManagerError::InvalidInput("Invalid file name".into()))?;
 
             // Build destination inside trash
             let dst = trash.join(file_name);
 
             // Move instead of delete
-            fs::rename(src, dst)?;
+            fs::rename(src_path, dst)?;
             return Ok(());
         }
 
         // Normal delete
-        if src.is_dir() {
+        if src_path.is_dir() {
             if !recursive {
                 return Err(FileManagerError::InvalidInput(format!(
                     "Use --recursive to delete directories: {:?}",
-                    src
+                    src_path
                 )));
             }
-            fs::remove_dir_all(src)?;
+            fs::remove_dir_all(src_path)?;
         } else {
-            fs::remove_file(src)?;
+            fs::remove_file(src_path)?;
         }
 
         Ok(())
@@ -109,8 +110,8 @@ impl FileManager {
 
     pub fn compress_path(&self) -> Result<(), FileManagerError> {
         let _guard = self.lock.lock();
-        let src = Path::new(&self.file_path);
-        let dst = Path::new(&self.file_dest);
+        let src = self.file_path.as_path();
+        let dst = self.file_dest.as_path();
 
         // Ensure destination is valid for compression
         validate_compress_path(dst)?;
@@ -157,7 +158,7 @@ impl FileManager {
     }
 
     pub fn folder_deduplication(&self, to_trash: bool) -> Result<(), FileManagerError> {
-        let src = Path::new(&self.file_path);
+        let src = self.file_path.as_path();
 
         if src.is_dir() {valid_directory(src)?;}
 
@@ -184,7 +185,7 @@ impl FileManager {
 
                 if let Some(original) = seen.get(&hash) {
                     // Duplicate → delete it
-                    self.delete_path(path.to_string_lossy().to_string(), true, to_trash)?;
+                    self.delete_path(path.clone(), true, to_trash)?;
                     println!("Removed duplicate: {:?} (original: {:?})", path, original);
                 } else {
                     seen.insert(hash, path_str.to_string());
