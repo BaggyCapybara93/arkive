@@ -1,7 +1,5 @@
 use crate::file_validation::handlers::{
-    ensure_not_nested,
-    valid_directory,
-    validate_hash
+    ensure_not_nested, valid_directory, validate_compress_path, validate_hash
 };
 use crate::file_validation::hash::hash_file;
 
@@ -114,12 +112,8 @@ impl FileManager {
         let src = Path::new(&self.file_path);
         let dst = Path::new(&self.file_dest);
 
-        // Ensure destination ends with .tar.gz
-        if !self.file_dest.ends_with(".tar.gz") {
-            return Err(FileManagerError::InvalidInput(
-                "Destination must end with .tar.gz".into(),
-            ));
-        }
+        // Ensure destination is valid for compression
+        validate_compress_path(dst)?;
 
         if src.is_dir() {valid_directory(src)?;}
         

@@ -46,3 +46,19 @@ pub fn validate_hash(src: &Path, dst: &Path) -> Result<(), FileManagerError> {
 
     Ok(())
 }
+
+// Validates destination is a valid extension for compression
+pub fn validate_compress_path(dst: &Path) -> Result<(), FileManagerError> {
+    let valid_extensions = ["tar.gz", "tgz"]; // Change this to be configurable in the future
+    let dst_str = dst.to_str().ok_or(FileManagerError::InvalidInput(
+        "Destination path is not valid UTF‑8".into(),
+    ))?;
+
+    if !valid_extensions.iter().any(|ext| dst_str.ends_with(ext)) {
+        return Err(FileManagerError::InvalidInput(format!(
+            "Destination {:?} must have a valid compression extension: {:?}", dst, valid_extensions
+        )));
+    }
+
+    Ok(())
+}
