@@ -1,3 +1,4 @@
+pub mod cleanup;
 pub mod copy;
 pub mod dedup;
 pub mod error;

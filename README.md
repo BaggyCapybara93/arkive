@@ -169,6 +169,44 @@ arkive deduplicate /path/to/folder
 arkive deduplicate /path/to/folder --trash
 ```
 
+### Cleanup
+```bash
+arkive cleanup [OPTIONS] [PATH]
+```
+
+Clean up the workspace with multiple options. This command can perform several cleanup operations in one go.
+
+**Options:**
+- `--empty-trash`: Empty the arkive trash directory
+- `--deduplicate`: Scan for and remove duplicate files
+- `--scan-unused`: Scan for unused files (files not accessed in 30+ days)
+- `--scan-empty-dirs`: Scan for and remove empty directories
+- `PATH`: Optional path to scan (defaults to current directory)
+
+**Examples:**
+```bash
+# Empty trash only
+arkive cleanup --empty-trash
+
+# Remove duplicates only
+arkive cleanup --deduplicate
+
+# Scan for unused files
+arkive cleanup --scan-unused
+
+# Remove empty directories
+arkive cleanup --scan-empty-dirs
+
+# Combine multiple operations
+arkive cleanup --empty-trash --deduplicate --scan-empty-dirs
+
+# Clean a specific directory with multiple operations
+arkive cleanup --path /path/to/directory --deduplicate --scan-unused
+
+# Preview cleanup operations without executing
+arkive cleanup --dry-run --empty-trash --deduplicate
+```
+
 ## License
 
 This project is licensed under the MIT License

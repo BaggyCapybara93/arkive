@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use crate::batch_handler::BatchHandler;
 use crate::error::AppError;
+use crate::file_manager::cleanup;
 use crate::file_manager::trash;
 use crate::file_manager::FileManager;
 use crate::settings::Settings;
@@ -80,6 +81,24 @@ pub enum Command {
         #[arg(long, help = "Keep deleted files in arkive trash")]
         trash: bool,
     },
+
+    /// Clean up the workspace with multiple options
+    Cleanup {
+        /// Path to scan (default: current directory)
+        path: Option<String>,
+
+        #[arg(long, help = "Empty the arkive trash directory")]
+        empty_trash: bool,
+
+        #[arg(long, help = "Scan for and remove duplicate files")]
+        deduplicate: bool,
+
+        #[arg(long, help = "Scan for unused files (not accessed in 30+ days)")]
+        scan_unused: bool,
+
+        #[arg(long, help = "Scan for and remove empty directories")]
+        scan_empty_dirs: bool,
+    },
 }
 
 fn handle_move(src: &str, dest: &str, recursive: bool, settings: &Settings) ->  Result<(), AppError> {
@@ -121,6 +140,13 @@ fn handle_deduplicate(path: &str, to_trash: bool, settings: &Settings) -> Result
     Ok(())
 }
 
+fn handle_cleanup(path: Option<String>, options: cleanup::CleanupOptions, settings: &Settings) -> Result<(), AppError> {
+    let path_str = path.unwrap_or_else(|| std::env::current_dir().unwrap().to_string_lossy().to_string());
+    let fm = FileManager::new(&path_str, "", settings);
+    fm.cleanup(options)?;
+    Ok(())
+}
+
 fn handle_empty_trash(settings: &Settings) -> Result<(), AppError> {
     trash::empty_trash(settings)?;
     Ok(())
@@ -140,5 +166,14 @@ pub fn cli_handler(cmd: Command, settings: &Settings) -> Result<(), AppError> {
         Command::EmptyTrash => handle_empty_trash(settings),
         Command::ListTrash => handle_list_trash(settings),
         Command::Deduplicate { path, trash } => handle_deduplicate(&path, trash, settings),
+        Command::Cleanup { path, empty_trash, deduplicate, scan_unused, scan_empty_dirs } => {
+            let options = cleanup::CleanupOptions {
+                empty_trash,
+                deduplicate,
+                scan_unused,
+                scan_empty_dirs,
+            };
+            handle_cleanup(path, options, settings)
+        }
     }
 }
