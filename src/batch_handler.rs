@@ -143,7 +143,10 @@ impl Job {
         let settings = self.settings.as_ref()
             .ok_or_else(|| FileManagerError::InvalidInput("Settings not provided".to_string()))?;
         let recursive = self.recursive.unwrap_or(settings.recursive);
-        let dest = self.destination.clone().unwrap_or_else(|| self.source.clone());
+        let dest = match &self.destination {
+            Some(dest) => dest.clone(),
+            None => self.source.clone(),
+        };
         
         let fm = FileManager::new(self.source.clone(), dest, settings);
 

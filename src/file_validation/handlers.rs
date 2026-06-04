@@ -4,7 +4,10 @@ use crate::file_validation::hash::hash_file;
 
 pub fn ensure_not_nested(src: &Path, dst: &Path) -> Result<(), FileManagerError>{
     let src = src.canonicalize()?;
-    let dst = dst.canonicalize().unwrap_or_else(|_| dst.to_path_buf());
+    let dst = match dst.canonicalize() {
+        Ok(path) => path,
+        Err(_) => dst.to_path_buf(),
+    };
 
     if dst.starts_with(&src) {
         return Err(FileManagerError::InvalidInput(

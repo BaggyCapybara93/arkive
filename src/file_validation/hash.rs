@@ -20,8 +20,7 @@ pub fn hash_file(path: &str) -> std::io::Result<String> {
     let mut hex = String::with_capacity(result.len() * 2);
 
     for byte in result {
-        use std::fmt::Write;
-        write!(&mut hex, "{:02x}", byte).unwrap();
+        hex.push_str(&format!("{:02x}", byte));
     }
 
     Ok(hex)
