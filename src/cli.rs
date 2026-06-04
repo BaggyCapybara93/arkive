@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use std::path::{Path, PathBuf};
 use crate::batch_handler::BatchHandler;
 use crate::error::AppError;
 use crate::file_manager::cleanup;
@@ -32,10 +33,10 @@ pub enum Command {
     /// Move a file or directory
     Move {
         /// Source path
-        src: String,
+        src: PathBuf,
 
         /// Destination path
-        dest: String,
+        dest: PathBuf,
         #[arg(long, help = "Move directories recursively")]
         recursive: bool,
     },
@@ -43,10 +44,10 @@ pub enum Command {
     /// Copy a file or directory
     Copy {
         /// Source path
-        src: String,
+        src: PathBuf,
 
         /// Destination path
-        dest: String,
+        dest: PathBuf,
 
         #[arg(long, help = "Copy directories recursively")]
         recursive: bool,
@@ -55,16 +56,16 @@ pub enum Command {
     /// Compress a file or directory into a tar.gz archive
     Compress {
         /// Source path
-        src: String,
+        src: PathBuf,
         
         /// Destination path
-        dest: String,
+        dest: PathBuf,
     },
 
     /// Execute a batch of commands from a JSON file
     Batch {
         /// Path to batch file
-        file: String,
+        file: PathBuf,
     },
 
     /// Empty the arkive trash directory
@@ -76,7 +77,7 @@ pub enum Command {
     /// Scan a directory for files with the same hash
     Deduplicate {
         /// Path of folder
-        path: String,
+        path: PathBuf,
 
         #[arg(long, help = "Keep deleted files in arkive trash")]
         trash: bool,
@@ -85,7 +86,7 @@ pub enum Command {
     /// Clean up the workspace with multiple options
     Cleanup {
         /// Path to scan (default: current directory)
-        path: Option<String>,
+        path: Option<PathBuf>,
 
         #[arg(long, help = "Empty the arkive trash directory")]
         empty_trash: bool,
@@ -101,7 +102,7 @@ pub enum Command {
     },
 }
 
-fn handle_move(src: &str, dest: &str, recursive: bool, settings: &Settings) ->  Result<(), AppError> {
+fn handle_move(src: &Path, dest: &Path, recursive: bool, settings: &Settings) ->  Result<(), AppError> {
     let fm = FileManager::new(src, dest, settings);
     if recursive {
         fm.copy_path(true)?;
@@ -112,7 +113,7 @@ fn handle_move(src: &str, dest: &str, recursive: bool, settings: &Settings) ->  
     Ok(())
 }
 
-fn handle_copy(src: &str, dest: &str, recursive: bool, settings: &Settings) -> Result<(), AppError> {
+fn handle_copy(src: &Path, dest: &Path, recursive: bool, settings: &Settings) -> Result<(), AppError> {
     let fm = FileManager::new(src, dest, settings);
     if recursive {
         fm.copy_path(true)?;
@@ -122,27 +123,27 @@ fn handle_copy(src: &str, dest: &str, recursive: bool, settings: &Settings) -> R
     Ok(())
 }
 
-fn handle_compress(src: &str, dest: &str, settings: &Settings) -> Result<(), AppError> {
+fn handle_compress(src: &Path, dest: &Path, settings: &Settings) -> Result<(), AppError> {
     let fm = FileManager::new(src, dest, settings);
     fm.compress_path()?;
     Ok(())
 }
 
-fn handle_batch(file: &str, settings: &Settings) -> Result<(), AppError> {
-    let batch_handler = BatchHandler::from_file(file, settings)?;
+fn handle_batch(file: &Path, settings: &Settings) -> Result<(), AppError> {
+    let batch_handler = BatchHandler::from_file(file.to_string_lossy().as_ref(), settings)?;
     batch_handler.run()?;
     Ok(())
 }
 
-fn handle_deduplicate(path: &str, to_trash: bool, settings: &Settings) -> Result<(), AppError> {
+fn handle_deduplicate(path: &Path, to_trash: bool, settings: &Settings) -> Result<(), AppError> {
     let fm = FileManager::new(path, "", settings);
     fm.folder_deduplication(to_trash)?;
     Ok(())
 }
 
-fn handle_cleanup(path: Option<String>, options: cleanup::CleanupOptions, settings: &Settings) -> Result<(), AppError> {
+fn handle_cleanup(path: Option<&Path>, options: cleanup::CleanupOptions, settings: &Settings) -> Result<(), AppError> {
     let path_str = match path {
-        Some(p) => p,
+        Some(p) => p.to_string_lossy().to_string(),
         None => std::env::current_dir()?.to_string_lossy().to_string(),
     };
     let fm = FileManager::new(&path_str, "", settings);
@@ -176,7 +177,7 @@ pub fn cli_handler(cmd: Command, settings: &Settings) -> Result<(), AppError> {
                 scan_unused,
                 scan_empty_dirs,
             };
-            handle_cleanup(path, options, settings)
+            handle_cleanup(path.as_deref(), options, settings)
         }
     }
 }

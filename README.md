@@ -99,21 +99,21 @@ Execute a batch of file operations from a JSON configuration file.
 {
   "operations": [
     {
-      "type": "move",
-      "src": "file1.txt",
-      "dest": "backup/",
+      "work_type": "move",
+      "source": "file1.txt",
+      "destination": "backup/",
       "recursive": false
     },
     {
-      "type": "copy",
-      "src": "myproject/",
-      "dest": "backup/myproject/",
+      "work_type": "copy",
+      "source": "myproject/",
+      "destination": "backup/myproject/",
       "recursive": true
     },
     {
-      "type": "compress",
-      "src": "data/",
-      "dest": "backup/data.tar.gz"
+      "work_type": "compress",
+      "source": "data/",
+      "destination": "backup/data.tar.gz"
     }
   ]
 }

@@ -182,6 +182,26 @@ impl BatchHandler {
         BatchHandler { commands, settings }
     }
 
+    pub fn from_file(path: &str, settings: &Settings) -> Result<Self, BatchError> {
+        let batch_content = fs::read_to_string(path)?;
+        
+        // Try parsing as BatchFile first (new format with "operations" key)
+        if let Ok(batch) = serde_json::from_str::<BatchFile>(&batch_content) {
+            let commands = batch.operations
+                .into_iter()
+                .map(|mut job| {
+                    job.settings = Some(Arc::new(settings.clone()));
+                    job
+                })
+                .collect();
+            return Ok(BatchHandler { commands, settings: Arc::new(settings.clone()) });
+        }
+        
+        // Fall back to plain Vec<Job> (old format)
+        let commands: Vec<Job> = serde_json::from_str(&batch_content)?;
+        Ok(BatchHandler::new(commands, settings))
+    }
+
     pub fn run(&self) -> Result<(), BatchError> {
         let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
 
@@ -200,10 +220,10 @@ impl BatchHandler {
         }
         pool.join()
     }
+}
 
-    pub fn from_file(path: &str, settings: &Settings) -> Result<Self, BatchError> {
-        let data = fs::read_to_string(path)?;
-        let commands: Vec<Job> = serde_json::from_str(&data)?;
-        Ok(Self::new(commands, settings))
-    }
+#[derive(Debug, Deserialize)]
+pub struct BatchFile {
+    #[serde(rename = "operations")]
+    pub operations: Vec<Job>,
 }
