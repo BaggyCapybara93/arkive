@@ -3,6 +3,7 @@ use crate::batch_handler::BatchHandler;
 use crate::error::AppError;
 use crate::file_manager::trash;
 use crate::file_manager::FileManager;
+use crate::settings::Settings;
 
 #[derive(Parser)]
 #[command(
@@ -12,6 +13,15 @@ use crate::file_manager::FileManager;
 )]
 
 pub struct CLI {
+    #[arg(long, help = "Disable trash, permanently delete files")]
+    pub no_trash: bool,
+
+    #[arg(short, long, help = "Enable verbose output")]
+    pub verbose: bool,
+
+    #[arg(long, help = "Preview operations without executing")]
+    pub dry_run: bool,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -72,8 +82,8 @@ pub enum Command {
     },
 }
 
-fn handle_move(src: &str, dest: &str, recursive: bool) ->  Result<(), AppError> {
-    let fm = FileManager::new(src, dest);
+fn handle_move(src: &str, dest: &str, recursive: bool, settings: &Settings) ->  Result<(), AppError> {
+    let fm = FileManager::new(src, dest, settings);
     if recursive {
         fm.copy_path(true)?;
         fm.delete_path(src, true, false)?;
@@ -83,8 +93,8 @@ fn handle_move(src: &str, dest: &str, recursive: bool) ->  Result<(), AppError> 
     Ok(())
 }
 
-fn handle_copy(src: &str, dest: &str, recursive: bool) -> Result<(), AppError> {
-    let fm = FileManager::new(src, dest);
+fn handle_copy(src: &str, dest: &str, recursive: bool, settings: &Settings) -> Result<(), AppError> {
+    let fm = FileManager::new(src, dest, settings);
     if recursive {
         fm.copy_path(true)?;
     } else {
@@ -93,42 +103,42 @@ fn handle_copy(src: &str, dest: &str, recursive: bool) -> Result<(), AppError> {
     Ok(())
 }
 
-fn handle_compress(src: &str, dest: &str) -> Result<(), AppError> {
-    let fm = FileManager::new(src, dest);
+fn handle_compress(src: &str, dest: &str, settings: &Settings) -> Result<(), AppError> {
+    let fm = FileManager::new(src, dest, settings);
     fm.compress_path()?;
     Ok(())
 }
 
-fn handle_batch(file: &str) -> Result<(), AppError> {
-    let batch_handler = BatchHandler::from_file(file)?;
+fn handle_batch(file: &str, settings: &Settings) -> Result<(), AppError> {
+    let batch_handler = BatchHandler::from_file(file, settings)?;
     batch_handler.run()?;
     Ok(())
 }
 
-fn handle_deduplicate(path: &str, to_trash: bool) -> Result<(), AppError> {
-    let fm = FileManager::new(path, "");
+fn handle_deduplicate(path: &str, to_trash: bool, settings: &Settings) -> Result<(), AppError> {
+    let fm = FileManager::new(path, "", settings);
     fm.folder_deduplication(to_trash)?;
     Ok(())
 }
 
-fn handle_empty_trash() -> Result<(), AppError> {
-    trash::empty_trash()?;
+fn handle_empty_trash(settings: &Settings) -> Result<(), AppError> {
+    trash::empty_trash(settings)?;
     Ok(())
 }
 
-fn handle_list_trash() -> Result<(), AppError> {
-    trash::list_trash()?;
+fn handle_list_trash(settings: &Settings) -> Result<(), AppError> {
+    trash::list_trash(settings)?;
     Ok(())
 }
 
-pub fn cli_handler(cmd: Command) -> Result<(), AppError> {
+pub fn cli_handler(cmd: Command, settings: &Settings) -> Result<(), AppError> {
     match cmd {
-        Command::Move { src, dest, recursive } => handle_move(&src, &dest, recursive),
-        Command::Copy { src, dest, recursive } => handle_copy(&src, &dest, recursive),
-        Command::Compress { src, dest } => handle_compress(&src, &dest),
-        Command::Batch { file } => handle_batch(&file),
-        Command::EmptyTrash => handle_empty_trash(),
-        Command::ListTrash => handle_list_trash(),
-        Command::Deduplicate { path, trash } => handle_deduplicate(&path, trash),
+        Command::Move { src, dest, recursive } => handle_move(&src, &dest, recursive, settings),
+        Command::Copy { src, dest, recursive } => handle_copy(&src, &dest, recursive, settings),
+        Command::Compress { src, dest } => handle_compress(&src, &dest, settings),
+        Command::Batch { file } => handle_batch(&file, settings),
+        Command::EmptyTrash => handle_empty_trash(settings),
+        Command::ListTrash => handle_list_trash(settings),
+        Command::Deduplicate { path, trash } => handle_deduplicate(&path, trash, settings),
     }
 }

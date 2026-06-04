@@ -2,19 +2,22 @@ use parking_lot::Mutex;
 use std::path::PathBuf;
 
 use super::error::FileManagerError;
+use crate::settings::Settings;
 
-pub struct FileManager {
+pub struct FileManager<'a> {
     pub file_path: PathBuf,
     pub file_dest: PathBuf,
     pub lock: Mutex<()>,
+    pub settings: &'a Settings,
 }
 
-impl FileManager {
-    pub fn new(file_path: impl Into<PathBuf>, file_dest: impl Into<PathBuf>) -> Self {
+impl<'a> FileManager<'a> {
+    pub fn new(file_path: impl Into<PathBuf>, file_dest: impl Into<PathBuf>, settings: &'a Settings) -> Self {
         FileManager { 
             file_path: file_path.into(), 
             file_dest: file_dest.into(),
             lock: Mutex::new(()),
+            settings,
         }
     }
 

@@ -1,9 +1,11 @@
 use serde::Deserialize;
 use serde_json;
 use crate::file_manager::{FileManager, FileManagerError};
+use crate::settings::Settings;
 use std::fs;
+use std::sync::Arc;
 use std::{
-    sync::{mpsc, Arc, Mutex},
+    sync::{mpsc, Mutex},
     thread,
 };
 
@@ -132,14 +134,18 @@ pub struct Job {
     pub destination: Option<String>,
     pub recursive: Option<bool>,
     pub to_trash: Option<bool>,
+    #[serde(skip)]
+    pub settings: Option<Arc<Settings>>,
 }
 
 impl Job {
     pub fn execute(&self) -> Result<(), FileManagerError> {
-        let recursive = self.recursive.unwrap_or(false);
-        let trash = self.to_trash.unwrap_or(false);
+        let settings = self.settings.as_ref()
+            .ok_or_else(|| FileManagerError::InvalidInput("Settings not provided".to_string()))?;
+        let recursive = self.recursive.unwrap_or(settings.recursive);
         let dest = self.destination.clone().unwrap_or_else(|| self.source.clone());
-        let fm = FileManager::new(self.source.clone(), dest);
+        
+        let fm = FileManager::new(self.source.clone(), dest, settings);
 
         match self.work_type {
             WorkType::Move => {
@@ -160,11 +166,17 @@ impl Job {
 
 pub struct BatchHandler {
     pub commands: Vec<Job>,
+    pub settings: Arc<Settings>,
 }
 
 impl BatchHandler {
-    pub fn new(commands: Vec<Job>) -> Self{
-        BatchHandler { commands }
+    pub fn new(commands: Vec<Job>, settings: &Settings) -> Self {
+        let settings = Arc::new(settings.clone());
+        let commands = commands.into_iter().map(|mut job| {
+            job.settings = Some(settings.clone());
+            job
+        }).collect();
+        BatchHandler { commands, settings }
     }
 
     pub fn run(&self) -> Result<(), BatchError> {
@@ -186,9 +198,9 @@ impl BatchHandler {
         pool.join()
     }
 
-    pub fn from_file(path: &str) -> Result<Self, BatchError> {
+    pub fn from_file(path: &str, settings: &Settings) -> Result<Self, BatchError> {
         let data = fs::read_to_string(path)?;
         let commands: Vec<Job> = serde_json::from_str(&data)?;
-        Ok(Self::new(commands))
+        Ok(Self::new(commands, settings))
     }
 }

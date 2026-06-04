@@ -5,7 +5,7 @@ use crate::file_manager::error::FileManagerError;
 use crate::file_manager::manager::FileManager;
 use crate::file_validation::hash::hash_file;
 
-impl FileManager {
+impl<'a> FileManager<'a> {
     /// Scan a directory for duplicate files (same hash) and remove them.
     pub fn folder_deduplication(&self, to_trash: bool) -> Result<(), FileManagerError> {
         let src = self.file_path.as_path();

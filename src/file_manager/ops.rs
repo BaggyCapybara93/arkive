@@ -8,7 +8,7 @@ use crate::file_manager::error::FileManagerError;
 
 use super::manager::FileManager;
 
-impl FileManager {
+impl<'a> FileManager<'a> {
     /// Move a file or directory to the destination.
     pub fn move_path(&self) -> Result<(), FileManagerError> {
         let _ = self.lock.lock();
@@ -19,8 +19,19 @@ impl FileManager {
             valid_directory(src)?;
         }
 
+        if self.settings.dry_run {
+            if self.settings.verbose {
+                println!("[DRY-RUN] Would move {:?} to {:?}", src, dst);
+            }
+            return Ok(());
+        }
+
         // rename works for both files and directories
         fs::rename(src, dst)?;
+
+        if self.settings.verbose {
+            println!("Moved {:?} to {:?}", src, dst);
+        }
 
         Ok(())
     }
@@ -39,14 +50,33 @@ impl FileManager {
                     src
                 )));
             }
+
+            if self.settings.dry_run {
+                if self.settings.verbose {
+                    println!("[DRY-RUN] Would copy directory {:?} to {:?}", src, dst);
+                }
+                return Ok(());
+            }
+
             super::copy::copy_dir_recursive(src, dst)?;
         } else {
+            if self.settings.dry_run {
+                if self.settings.verbose {
+                    println!("[DRY-RUN] Would copy file {:?} to {:?}", src, dst);
+                }
+                return Ok(());
+            }
+
             fs::copy(src, dst)?;
         }
 
         // Verify file integrity
-        if src.is_file() {
+        if src.is_file() && !self.settings.dry_run {
             validate_hash(src, dst)?;
+        }
+
+        if self.settings.verbose {
+            println!("Copied {:?} to {:?}", src, dst);
         }
 
         Ok(())
@@ -62,7 +92,7 @@ impl FileManager {
             valid_directory(src_path)?;
         }
 
-        if to_trash {
+        if to_trash && self.settings.enable_trash {
             let trash = Self::trash_dir()?;
 
             // Extract filename
@@ -72,8 +102,18 @@ impl FileManager {
             // Build destination inside trash
             let dst = trash.join(file_name);
 
+            if self.settings.dry_run {
+                if self.settings.verbose {
+                    println!("[DRY-RUN] Would move {:?} to trash", src_path);
+                }
+                return Ok(());
+            }
+
             // Move instead of delete
             fs::rename(src_path, dst)?;
+            if self.settings.verbose {
+                println!("Moved {:?} to trash", src_path);
+            }
             return Ok(());
         }
 
@@ -85,9 +125,30 @@ impl FileManager {
                     src_path
                 )));
             }
+
+            if self.settings.dry_run {
+                if self.settings.verbose {
+                    println!("[DRY-RUN] Would permanently delete directory {:?}", src_path);
+                }
+                return Ok(());
+            }
+
             fs::remove_dir_all(src_path)?;
+            if self.settings.verbose {
+                println!("Permanently deleted directory {:?}", src_path);
+            }
         } else {
+            if self.settings.dry_run {
+                if self.settings.verbose {
+                    println!("[DRY-RUN] Would permanently delete file {:?}", src_path);
+                }
+                return Ok(());
+            }
+
             fs::remove_file(src_path)?;
+            if self.settings.verbose {
+                println!("Permanently deleted file {:?}", src_path);
+            }
         }
 
         Ok(())
