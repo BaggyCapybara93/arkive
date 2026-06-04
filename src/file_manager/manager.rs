@@ -1,7 +1,6 @@
 use parking_lot::Mutex;
 use std::path::PathBuf;
 
-use super::error::FileManagerError;
 use crate::settings::Settings;
 
 pub struct FileManager<'a> {
@@ -19,10 +18,5 @@ impl<'a> FileManager<'a> {
             lock: Mutex::new(()),
             settings,
         }
-    }
-
-    // Delegates to trash.rs for trash path handling
-    pub fn trash_dir() -> Result<PathBuf, FileManagerError> {
-        super::trash::trash_dir()
     }
 }

@@ -93,7 +93,7 @@ impl<'a> FileManager<'a> {
         }
 
         if to_trash && self.settings.enable_trash {
-            let trash = Self::trash_dir()?;
+            let trash = super::trash::trash_dir()?;
 
             // Extract filename
             let file_name = src_path.file_name()
