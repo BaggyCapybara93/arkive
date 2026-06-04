@@ -24,6 +24,9 @@ pub struct CLI {
     #[arg(long, help = "Preview operations without executing")]
     pub dry_run: bool,
 
+    #[arg(long, help = "Path to use as last used directory for config")]
+    pub last_used_directory: Option<PathBuf>,
+
     #[command(subcommand)]
     pub command: Command,
 }
