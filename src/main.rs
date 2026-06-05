@@ -5,6 +5,7 @@ mod batch_handler;
 mod error;
 mod settings;
 mod config_manager;
+mod metadata_manager;
 
 use clap::Parser;
 use crate::cli::cli_handler;
@@ -30,6 +31,7 @@ fn main() -> Result<(), AppError> {
         verbose: if cli.verbose { true } else { config.verbose },
         dry_run: if cli.dry_run { true } else { config.dry_run },
         recursive: config.recursive,
+        enable_metadata: config.enable_metadata,
     };
 
     cli_handler(cli.command, &settings)?;

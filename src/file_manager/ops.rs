@@ -1,14 +1,77 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::file_validation::handlers::{
     valid_directory, validate_compress_path, validate_hash
 };
+use crate::metadata_manager::{handler::MetadataHandler, MetadataManager};
 use crate::file_manager::error::FileManagerError;
 
 use super::manager::FileManager;
 
 impl<'a> FileManager<'a> {
+    fn canonical_destination_file(src: &Path, dst: &Path) -> Result<PathBuf, FileManagerError> {
+        if dst.is_dir() {
+            let file_name = src.file_name()
+                .ok_or_else(|| FileManagerError::InvalidInput("Invalid source file name".into()))?;
+            Ok(dst.join(file_name))
+        } else {
+            Ok(dst.to_path_buf())
+        }
+    }
+
+    fn central_metadata_file(root: &Path) -> Result<PathBuf, FileManagerError> {
+        let root_dir = if root.is_dir() {
+            root.to_path_buf()
+        } else {
+            root.parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| Path::new(".").to_path_buf())
+        };
+
+        Ok(root_dir.join(".arkive_metadata.json"))
+    }
+
+    fn metadata_manager_for_destination(&self, dst: &Path) -> Result<MetadataManager, FileManagerError> {
+        let metadata_path = Self::central_metadata_file(dst)?;
+        Ok(MetadataManager::new(metadata_path))
+    }
+
+    fn save_metadata_for_file(&self, path: &Path, manager: &MetadataManager) -> Result<(), FileManagerError> {
+        if !self.settings.enable_metadata || !path.is_file() {
+            return Ok(());
+        }
+
+        let metadata = MetadataHandler::collect_file(path)
+            .map_err(|e| FileManagerError::InvalidInput(format!("Metadata error: {e}")))?;
+
+        manager.update_metadata(metadata)
+            .map_err(|e| FileManagerError::InvalidInput(format!("Metadata error: {e}")))?;
+
+        Ok(())
+    }
+
+    fn save_metadata_for_directory(&self, src: &Path, dst: &Path, manager: &MetadataManager) -> Result<(), FileManagerError> {
+        if !self.settings.enable_metadata {
+            return Ok(());
+        }
+
+        for entry in fs::read_dir(dst)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            let dst_path = entry.path();
+
+            if file_type.is_dir() {
+                let src_path = src.join(entry.file_name());
+                self.save_metadata_for_directory(&src_path, &dst_path, manager)?;
+            } else if file_type.is_file() {
+                self.save_metadata_for_file(&dst_path, manager)?;
+            }
+        }
+
+        Ok(())
+    }
+
     /// Move a file or directory to the destination.
     pub fn move_path(&self) -> Result<(), FileManagerError> {
         let _ = self.lock.lock();
@@ -26,8 +89,13 @@ impl<'a> FileManager<'a> {
             return Ok(());
         }
 
-        // rename works for both files and directories
-        fs::rename(src, dst)?;
+        let dest_path = Self::canonical_destination_file(src, dst)?;
+        fs::rename(src, &dest_path)?;
+
+        if self.settings.enable_metadata && dest_path.is_file() {
+            let manager = self.metadata_manager_for_destination(&dest_path)?;
+            self.save_metadata_for_file(&dest_path, &manager)?;
+        }
 
         if self.settings.verbose {
             println!("Moved {:?} to {:?}", src, dst);
@@ -58,7 +126,13 @@ impl<'a> FileManager<'a> {
                 return Ok(());
             }
 
-            super::copy::copy_dir_recursive(src, dst)?;
+            let dest_dir = Self::canonical_destination_file(src, dst)?;
+            super::copy::copy_dir_recursive(src, &dest_dir)?;
+
+            if self.settings.enable_metadata {
+                let manager = self.metadata_manager_for_destination(&dest_dir)?;
+                self.save_metadata_for_directory(src, &dest_dir, &manager)?;
+            }
         } else {
             if self.settings.dry_run {
                 if self.settings.verbose {
@@ -67,12 +141,19 @@ impl<'a> FileManager<'a> {
                 return Ok(());
             }
 
-            fs::copy(src, dst)?;
+            let dest_file = Self::canonical_destination_file(src, dst)?;
+            fs::copy(src, &dest_file)?;
+
+            if self.settings.enable_metadata {
+                let manager = self.metadata_manager_for_destination(&dest_file)?;
+                self.save_metadata_for_file(&dest_file, &manager)?;
+            }
         }
 
         // Verify file integrity
         if src.is_file() && !self.settings.dry_run {
-            validate_hash(src, dst)?;
+            let dest_file = Self::canonical_destination_file(src, dst)?;
+            validate_hash(src, &dest_file)?;
         }
 
         if self.settings.verbose {

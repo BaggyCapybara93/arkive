@@ -12,6 +12,17 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), FileManagerError
 
     ensure_not_nested(src, dst)?;
 
+    if dst.exists() {
+        if !dst.is_dir() {
+            return Err(FileManagerError::InvalidInput(format!(
+                "Destination {:?} exists and is not a directory",
+                dst
+            )));
+        }
+    } else {
+        fs::create_dir_all(dst)?;
+    }
+
     for entry in fs::read_dir(src)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
@@ -21,6 +32,9 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), FileManagerError
         if file_type.is_dir() {
             copy_dir_recursive(&src_path, &dst_path)?;
         } else {
+            if let Some(parent) = dst_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
             fs::copy(&src_path, &dst_path)?;
         }
     }

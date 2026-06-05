@@ -22,6 +22,10 @@ pub struct Config {
     /// Enable recursive operations by default
     #[serde(default)]
     pub recursive: bool,
+
+    /// Enable metadata tracking when moving or copying files
+    #[serde(default)]
+    pub enable_metadata: bool,
     
     /// Last used directory for operations
     pub last_used_directory: Option<PathBuf>,
@@ -47,6 +51,7 @@ impl Default for Config {
             verbose: false,
             dry_run: false,
             recursive: false,
+            enable_metadata: false,
             last_used_directory: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
