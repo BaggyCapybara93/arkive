@@ -15,18 +15,14 @@ use crate::config_manager::ConfigManager;
 fn main() -> Result<(), AppError> {
     let cli = crate::cli::CLI::parse();
     
-    let config_manager = ConfigManager::new();
-    if let Err(e) = config_manager.create_default_config() {
-        eprintln!("Warning: failed to create default config file: {}", e);
-    }
+    let config_manager = ConfigManager::new()?;
+    config_manager.create_default_config()?;
 
-    let mut config = config_manager.load();
+    let mut config = config_manager.load()?;
     
     if let Some(ref last_dir) = cli.last_used_directory {
         config.last_used_directory = Some(last_dir.clone());
-        if let Err(e) = config_manager.save(&config) {
-            eprintln!("Warning: failed to save config: {}", e);
-        }
+        config_manager.save(&config)?;
     }
 
     let settings = Settings {

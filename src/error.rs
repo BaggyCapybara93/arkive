@@ -12,6 +12,9 @@ pub enum AppError {
     #[error("File manager error: {0}")]
     FileManager(#[from] crate::file_manager::FileManagerError),
 
+    #[error("Config error: {0}")]
+    ConfigError(#[from] crate::config_manager::ConfigError),
+
     #[error("Unexpected error: {0}")]
     Other(String),
 }
