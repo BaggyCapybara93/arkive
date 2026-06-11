@@ -32,6 +32,7 @@ fn main() -> Result<(), AppError> {
         dry_run: if cli.dry_run { true } else { config.dry_run },
         recursive: config.recursive,
         enable_metadata: config.enable_metadata,
+        compression_method: config.compression_method,
     };
 
     cli_handler(cli.command, &settings)?;

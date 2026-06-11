@@ -127,6 +127,22 @@ pub enum WorkType {
     Compress,
 }
 
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum BatchCompressionMethod {
+    Gzip,
+    Zstd,
+}
+
+impl From<BatchCompressionMethod> for crate::file_manager::compress::CompressionMethod {
+    fn from(batch_method: BatchCompressionMethod) -> Self {
+        match batch_method {
+            BatchCompressionMethod::Gzip => crate::file_manager::compress::CompressionMethod::Gzip,
+            BatchCompressionMethod::Zstd => crate::file_manager::compress::CompressionMethod::Zstd,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct Job {
     pub work_type: WorkType,
@@ -134,6 +150,7 @@ pub struct Job {
     pub destination: Option<String>,
     pub recursive: Option<bool>,
     pub to_trash: Option<bool>,
+    pub compression_method: Option<BatchCompressionMethod>,
     #[serde(skip)]
     pub settings: Option<Arc<Settings>>,
 }
@@ -160,7 +177,14 @@ impl Job {
                 }
             }
             WorkType::Copy => fm.copy_path(recursive)?,
-            WorkType::Compress => fm.compress_path()?,
+            WorkType::Compress => {
+                let compression_method = self.compression_method
+                    .as_ref()
+                    .map(|m| m.clone().into())
+                    .or_else(|| self.settings.as_ref().map(|s| s.compression_method));
+                let method = compression_method.unwrap_or(settings.compression_method);
+                fm.compress_path(method)?;
+            }
         }
 
         Ok(())

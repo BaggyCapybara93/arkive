@@ -1,4 +1,6 @@
 
+use crate::file_manager::compress::CompressionMethod;
+
 #[derive(Clone, Copy, Debug)]
 pub struct Settings {
     pub enable_trash: bool,
@@ -6,6 +8,7 @@ pub struct Settings {
     pub recursive: bool,
     pub dry_run: bool,
     pub enable_metadata: bool,
+    pub compression_method: CompressionMethod,
 }
 
 impl Default for Settings {
@@ -16,6 +19,7 @@ impl Default for Settings {
             recursive: false,
             dry_run: false,
             enable_metadata: false, //This wont be enabled through the cli just through the config for now
+            compression_method: CompressionMethod::Gzip,
         }
     }
 }   

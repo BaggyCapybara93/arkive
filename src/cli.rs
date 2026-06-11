@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, value_parser};
 use std::path::{Path, PathBuf};
 use crate::batch_handler::BatchHandler;
 use crate::error::AppError;
@@ -6,6 +6,7 @@ use crate::file_manager::cleanup;
 use crate::file_manager::trash;
 use crate::file_manager::FileManager;
 use crate::settings::Settings;
+use crate::file_manager::compress::CompressionMethod;
 
 #[derive(Parser)]
 #[command(
@@ -63,6 +64,9 @@ pub enum Command {
         
         /// Destination path
         dest: PathBuf,
+
+        #[arg(long, help = "Compression method (gzip or zstd)", value_parser = value_parser!(CompressionMethod))]
+        method: Option<CompressionMethod>,
     },
 
     /// Execute a batch of commands from a JSON file
@@ -126,9 +130,10 @@ fn handle_copy(src: &Path, dest: &Path, recursive: bool, settings: &Settings) ->
     Ok(())
 }
 
-fn handle_compress(src: &Path, dest: &Path, settings: &Settings) -> Result<(), AppError> {
+fn handle_compress(src: &Path, dest: &Path, method: Option<CompressionMethod>, settings: &Settings) -> Result<(), AppError> {
     let fm = FileManager::new(src, dest, settings);
-    fm.compress_path()?;
+    let compression_method = method.unwrap_or(settings.compression_method);
+    fm.compress_path(compression_method)?;
     Ok(())
 }
 
@@ -168,7 +173,7 @@ pub fn cli_handler(cmd: Command, settings: &Settings) -> Result<(), AppError> {
     match cmd {
         Command::Move { src, dest, recursive } => handle_move(&src, &dest, recursive, settings),
         Command::Copy { src, dest, recursive } => handle_copy(&src, &dest, recursive, settings),
-        Command::Compress { src, dest } => handle_compress(&src, &dest, settings),
+        Command::Compress { src, dest, method } => handle_compress(&src, &dest, method, settings),
         Command::Batch { file } => handle_batch(&file, settings),
         Command::EmptyTrash => handle_empty_trash(settings),
         Command::ListTrash => handle_list_trash(settings),
