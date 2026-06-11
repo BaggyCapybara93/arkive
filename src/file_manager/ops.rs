@@ -10,7 +10,7 @@ use crate::file_manager::error::FileManagerError;
 use super::manager::FileManager;
 
 impl<'a> FileManager<'a> {
-    fn canonical_destination_file(src: &Path, dst: &Path) -> Result<PathBuf, FileManagerError> {
+    pub(crate) fn canonical_destination_file(src: &Path, dst: &Path) -> Result<PathBuf, FileManagerError> {
         if dst.is_dir() {
             let file_name = src.file_name()
                 .ok_or_else(|| FileManagerError::InvalidInput("Invalid source file name".into()))?;
@@ -20,7 +20,7 @@ impl<'a> FileManager<'a> {
         }
     }
 
-    fn central_metadata_file(root: &Path) -> Result<PathBuf, FileManagerError> {
+    pub(crate) fn central_metadata_file(root: &Path) -> Result<PathBuf, FileManagerError> {
         let root_dir = if root.is_dir() {
             root.to_path_buf()
         } else {
@@ -32,12 +32,12 @@ impl<'a> FileManager<'a> {
         Ok(root_dir.join(".arkive_metadata.json"))
     }
 
-    fn metadata_manager_for_destination(&self, dst: &Path) -> Result<MetadataManager, FileManagerError> {
+    pub(crate) fn metadata_manager_for_destination(&self, dst: &Path) -> Result<MetadataManager, FileManagerError> {
         let metadata_path = Self::central_metadata_file(dst)?;
         Ok(MetadataManager::new(metadata_path))
     }
 
-    fn save_metadata_for_file(&self, path: &Path, manager: &MetadataManager) -> Result<(), FileManagerError> {
+    pub(crate) fn save_metadata_for_file(&self, path: &Path, manager: &MetadataManager) -> Result<(), FileManagerError> {
         if !self.settings.enable_metadata || !path.is_file() {
             return Ok(());
         }
@@ -51,7 +51,7 @@ impl<'a> FileManager<'a> {
         Ok(())
     }
 
-    fn save_metadata_for_directory(&self, src: &Path, dst: &Path, manager: &MetadataManager) -> Result<(), FileManagerError> {
+    pub(crate) fn save_metadata_for_directory(&self, src: &Path, dst: &Path, manager: &MetadataManager) -> Result<(), FileManagerError> {
         if !self.settings.enable_metadata {
             return Ok(());
         }
@@ -99,65 +99,6 @@ impl<'a> FileManager<'a> {
 
         if self.settings.verbose {
             println!("Moved {:?} to {:?}", src, dst);
-        }
-
-        Ok(())
-    }
-
-    /// Copy a file or directory to the destination.
-    pub fn copy_path(&self, recursive: bool) -> Result<(), FileManagerError> {
-        let _ = self.lock.lock();
-        let src = self.file_path.as_path();
-        let dst = self.file_dest.as_path();
-
-        if src.is_dir() {
-            valid_directory(src)?;
-            if !recursive {
-                return Err(FileManagerError::InvalidInput(format!(
-                    "Use --recursive to copy directories: {:?}",
-                    src
-                )));
-            }
-
-            if self.settings.dry_run {
-                if self.settings.verbose {
-                    println!("[DRY-RUN] Would copy directory {:?} to {:?}", src, dst);
-                }
-                return Ok(());
-            }
-
-            let dest_dir = Self::canonical_destination_file(src, dst)?;
-            super::copy::copy_dir_recursive(src, &dest_dir)?;
-
-            if self.settings.enable_metadata {
-                let manager = self.metadata_manager_for_destination(&dest_dir)?;
-                self.save_metadata_for_directory(src, &dest_dir, &manager)?;
-            }
-        } else {
-            if self.settings.dry_run {
-                if self.settings.verbose {
-                    println!("[DRY-RUN] Would copy file {:?} to {:?}", src, dst);
-                }
-                return Ok(());
-            }
-
-            let dest_file = Self::canonical_destination_file(src, dst)?;
-            fs::copy(src, &dest_file)?;
-
-            if self.settings.enable_metadata {
-                let manager = self.metadata_manager_for_destination(&dest_file)?;
-                self.save_metadata_for_file(&dest_file, &manager)?;
-            }
-        }
-
-        // Verify file integrity
-        if src.is_file() && !self.settings.dry_run {
-            let dest_file = Self::canonical_destination_file(src, dst)?;
-            validate_hash(src, &dest_file)?;
-        }
-
-        if self.settings.verbose {
-            println!("Copied {:?} to {:?}", src, dst);
         }
 
         Ok(())
