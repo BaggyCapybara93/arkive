@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand, value_parser};
 use std::path::{Path, PathBuf};
-use crate::batch_handler::BatchHandler;
+use crate::batch_module::BatchHandler;
 use crate::error::AppError;
 use crate::file_module::cleanup;
 use crate::file_module::trash;

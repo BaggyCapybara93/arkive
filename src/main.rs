@@ -1,7 +1,7 @@
 mod file_module;
 mod file_validation;
 mod cli;
-mod batch_handler;
+mod batch_module;
 mod error;
 mod settings;
 mod config_module;

@@ -1,5 +1,5 @@
 use thiserror::Error;
-use crate::batch_handler::BatchError;
+use crate::batch_module::BatchError;
 
 #[derive(Error, Debug)]
 pub enum AppError {
