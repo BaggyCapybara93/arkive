@@ -2,9 +2,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use crate::file_manager::error::FileManagerError;
-use crate::file_manager::trash;
-use crate::file_manager::FileManager;
+use crate::file_module::error::FileManagerError;
+use crate::file_module::trash;
+use crate::file_module::FileManager;
 
 impl<'a> FileManager<'a> {
     /// Clean up the workspace with multiple options

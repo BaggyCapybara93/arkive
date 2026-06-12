@@ -1,5 +1,5 @@
 use std::path::Path;
-use crate::file_manager::FileManagerError;
+use crate::file_module::FileManagerError;
 use crate::file_validation::hash::hash_file;
 
 pub fn ensure_not_nested(src: &Path, dst: &Path) -> Result<(), FileManagerError>{

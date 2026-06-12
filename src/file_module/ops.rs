@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use crate::file_validation::handlers::{
     valid_directory
 };
-use crate::metadata_manager::{handler::MetadataHandler, MetadataManager};
-use crate::file_manager::error::FileManagerError;
+use crate::metadata_module::{handler::MetadataHandler, MetadataManager};
+use crate::file_module::error::FileManagerError;
 
 use super::manager::FileManager;
 

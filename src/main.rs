@@ -1,17 +1,17 @@
-mod file_manager;
+mod file_module;
 mod file_validation;
 mod cli;
 mod batch_handler;
 mod error;
 mod settings;
-mod config_manager;
-mod metadata_manager;
+mod config_module;
+mod metadata_module;
 
 use clap::Parser;
 use crate::cli::cli_handler;
 use crate::error::AppError;
 use crate::settings::Settings;
-use crate::config_manager::ConfigManager;
+use crate::config_module::ConfigManager;
 
 fn main() -> Result<(), AppError> {
     let cli = crate::cli::CLI::parse();

@@ -10,10 +10,10 @@ pub enum AppError {
     BatchError(#[from] BatchError),
 
     #[error("File manager error: {0}")]
-    FileManager(#[from] crate::file_manager::FileManagerError),
+    FileManager(#[from] crate::file_module::FileManagerError),
 
     #[error("Config error: {0}")]
-    ConfigError(#[from] crate::config_manager::ConfigError),
+    ConfigError(#[from] crate::config_module::ConfigError),
 
     #[error("Unexpected error: {0}")]
     Other(String),

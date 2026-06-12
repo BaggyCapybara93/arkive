@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::file_manager::error::FileManagerError;
+use crate::file_module::error::FileManagerError;
 use crate::settings::Settings;
 
 /// Get the path to the arkive trash directory.

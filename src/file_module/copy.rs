@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use crate::file_manager::error::FileManagerError;
+use crate::file_module::error::FileManagerError;
 use crate::file_validation::handlers::{ensure_not_nested, valid_directory, validate_hash};
 use super::manager::FileManager;
 

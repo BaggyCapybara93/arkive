@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json;
 use std::{fs, path::{Path, PathBuf}};
 
-use crate::metadata_manager::error::MetadataError;
+use crate::metadata_module::error::MetadataError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Metadata {

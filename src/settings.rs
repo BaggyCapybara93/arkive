@@ -1,5 +1,5 @@
 
-use crate::file_manager::compress::CompressionMethod;
+use crate::file_module::compress::CompressionMethod;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Settings {

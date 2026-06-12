@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::fs;
 
-use crate::file_manager::error::FileManagerError;
-use crate::file_manager::manager::FileManager;
+use crate::file_module::error::FileManagerError;
+use crate::file_module::manager::FileManager;
 use crate::file_validation::hash::hash_file;
 
 impl<'a> FileManager<'a> {

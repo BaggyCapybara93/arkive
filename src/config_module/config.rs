@@ -2,7 +2,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use chrono::{DateTime, Utc};
-use crate::file_manager::compress::CompressionMethod;
+use crate::file_module::compress::CompressionMethod;
 
 /// Configuration for long-term storage of settings.
 /// This is separate from Settings which holds mostly short-term CLI settings.

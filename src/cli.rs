@@ -2,11 +2,11 @@ use clap::{Parser, Subcommand, value_parser};
 use std::path::{Path, PathBuf};
 use crate::batch_handler::BatchHandler;
 use crate::error::AppError;
-use crate::file_manager::cleanup;
-use crate::file_manager::trash;
-use crate::file_manager::FileManager;
+use crate::file_module::cleanup;
+use crate::file_module::trash;
+use crate::file_module::FileManager;
 use crate::settings::Settings;
-use crate::file_manager::compress::CompressionMethod;
+use crate::file_module::compress::CompressionMethod;
 
 #[derive(Parser)]
 #[command(

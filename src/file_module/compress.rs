@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::file_validation::handlers::{
     valid_directory, validate_compress_path
 };
-use crate::file_manager::error::FileManagerError;
+use crate::file_module::error::FileManagerError;
 
 use super::manager::FileManager;
 

@@ -1,6 +1,6 @@
 use serde::Deserialize;
 use serde_json;
-use crate::file_manager::{FileManager, FileManagerError};
+use crate::file_module::{FileManager, FileManagerError};
 use crate::settings::Settings;
 use std::fs;
 use std::sync::Arc;
@@ -134,11 +134,11 @@ pub enum BatchCompressionMethod {
     Zstd,
 }
 
-impl From<BatchCompressionMethod> for crate::file_manager::compress::CompressionMethod {
+impl From<BatchCompressionMethod> for crate::file_module::compress::CompressionMethod {
     fn from(batch_method: BatchCompressionMethod) -> Self {
         match batch_method {
-            BatchCompressionMethod::Gzip => crate::file_manager::compress::CompressionMethod::Gzip,
-            BatchCompressionMethod::Zstd => crate::file_manager::compress::CompressionMethod::Zstd,
+            BatchCompressionMethod::Gzip => crate::file_module::compress::CompressionMethod::Gzip,
+            BatchCompressionMethod::Zstd => crate::file_module::compress::CompressionMethod::Zstd,
         }
     }
 }

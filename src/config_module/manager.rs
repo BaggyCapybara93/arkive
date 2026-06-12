@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::env;
 
-use crate::config_manager::{Config, ConfigError};
+use crate::config_module::{Config, ConfigError};
 
 /// Manager for loading and saving configuration
 pub struct ConfigManager {
