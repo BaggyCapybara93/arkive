@@ -9,9 +9,6 @@ pub enum MetadataError {
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
-    #[error("Metadata file not found at: {0}")]
-    NotFound(PathBuf),
-
     #[error("Invalid metadata input: {0}")]
     InvalidInput(String),
 }
