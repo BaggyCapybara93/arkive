@@ -29,7 +29,7 @@ impl<'a> FileManager<'a> {
                 .unwrap_or_else(|| Path::new(".").to_path_buf())
         };
 
-        Ok(root_dir.join(".arkive_metadata.json"))
+        Ok(root_dir.join(".arkive_metadata"))
     }
 
     pub(crate) fn metadata_manager_for_destination(&self, dst: &Path) -> Result<MetadataManager, FileManagerError> {
@@ -72,6 +72,35 @@ impl<'a> FileManager<'a> {
         Ok(())
     }
 
+    fn collect_file_paths(&self, root: &Path) -> Result<Vec<PathBuf>, FileManagerError> {
+        let mut paths = Vec::new();
+
+        for entry in fs::read_dir(root)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            let path = entry.path();
+
+            if file_type.is_dir() {
+                paths.extend(self.collect_file_paths(&path)?);
+            } else if file_type.is_file() {
+                paths.push(path);
+            }
+        }
+
+        Ok(paths)
+    }
+
+    fn remove_metadata_for_file(&self, path: &Path) -> Result<(), FileManagerError> {
+        if !self.settings.enable_metadata || !path.is_file() {
+            return Ok(());
+        }
+
+        let manager = self.metadata_manager_for_destination(path)?;
+        manager.remove_metadata(path)
+            .map(|_| ())
+            .map_err(|e| FileManagerError::InvalidInput(format!("Metadata error: {e}")))
+    }
+
     /// Move a file or directory to the destination.
     pub fn move_path(&self) -> Result<(), FileManagerError> {
         let _ = self.lock.lock();
@@ -81,6 +110,12 @@ impl<'a> FileManager<'a> {
         if src.is_dir() {
             valid_directory(src)?;
         }
+
+        let source_paths = if self.settings.enable_metadata && src.is_dir() {
+            Some(self.collect_file_paths(src)?)
+        } else {
+            None
+        };
 
         if self.settings.dry_run {
             if self.settings.verbose {
@@ -92,9 +127,22 @@ impl<'a> FileManager<'a> {
         let dest_path = Self::canonical_destination_file(src, dst)?;
         fs::rename(src, &dest_path)?;
 
-        if self.settings.enable_metadata && dest_path.is_file() {
-            let manager = self.metadata_manager_for_destination(&dest_path)?;
-            self.save_metadata_for_file(&dest_path, &manager)?;
+        if self.settings.enable_metadata {
+            if dest_path.is_file() {
+                let manager = self.metadata_manager_for_destination(&dest_path)?;
+                self.save_metadata_for_file(&dest_path, &manager)?;
+            } else if dest_path.is_dir() {
+                let manager = self.metadata_manager_for_destination(&dest_path)?;
+                self.save_metadata_for_directory(src, &dest_path, &manager)?;
+            }
+
+            if let Some(paths) = source_paths {
+                for old_path in paths {
+                    self.remove_metadata_for_file(&old_path)?;
+                }
+            } else if src.is_file() {
+                self.remove_metadata_for_file(src)?;
+            }
         }
 
         if self.settings.verbose {

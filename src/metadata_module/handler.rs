@@ -2,7 +2,8 @@ use chrono::{DateTime, Utc};
 use std::{fs, path::{Path, PathBuf}};
 
 use crate::file_validation::hash::hash_file;
-use crate::metadata_module::{Metadata, MetadataError, MetadataManager};
+use crate::metadata_module::{MetadataError, MetadataManager};
+use crate::metadata_module::structs::Metadata;
 
 pub struct MetadataHandler;
 

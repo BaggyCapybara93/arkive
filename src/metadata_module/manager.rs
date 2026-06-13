@@ -1,107 +1,75 @@
+use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use serde_json;
-use std::{fs, path::{Path, PathBuf}};
-
-use crate::metadata_module::error::MetadataError;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Metadata {
-    pub file_path: PathBuf,
-    pub file_size: u64,
-    pub sha256: String,
-
-    #[serde(with = "chrono::serde::ts_seconds")]
-    pub created_at: DateTime<Utc>,
-
-    #[serde(with = "chrono::serde::ts_seconds")]
-    pub modified_at: DateTime<Utc>,
-
-    #[serde(with = "chrono::serde::ts_seconds")]
-    pub updated_at: DateTime<Utc>,
-}
-
-impl Metadata {
-    pub fn new(file_path: PathBuf, file_size: u64, sha256: String, modified_at: DateTime<Utc>) -> Self {
-        let now = Utc::now();
-
-        Metadata {
-            file_path,
-            file_size,
-            sha256,
-            created_at: now,
-            modified_at,
-            updated_at: now,
-        }
-    }
-}
+use crate::metadata_module::{
+    core_manager::CoreMetadataManager,
+    local_manager::LocalMetadataManager,
+    structs::Metadata,
+    error::MetadataError,
+};
 
 pub struct MetadataManager {
-    pub metadata_path: PathBuf,
+    core: CoreMetadataManager,
 }
 
 impl MetadataManager {
-    pub fn new(metadata_path: PathBuf) -> Self {
-        MetadataManager { metadata_path }
+    pub fn new(root: PathBuf) -> Self {
+        Self { core: CoreMetadataManager::new(root), }
     }
 
-    pub fn load_all_metadata(&self) -> Result<Vec<Metadata>, MetadataError> {
-        if !self.metadata_path.exists() {
-            return Ok(Vec::new());
-        }
+    pub fn update_metadata(&self, metadata: Metadata) -> Result<(), MetadataError> {
+        let canonical = self.core.canonicalize(&metadata.file_path)?;
 
-        let content = fs::read_to_string(&self.metadata_path)?;
-        let metadata = serde_json::from_str(&content)?;
+        let shard_path = self.core.resolve_shard(&canonical);
 
-        Ok(metadata)
-    }
+        let local = LocalMetadataManager::new(shard_path.clone());
+        local.upsert(Metadata {
+            file_path: canonical.clone(),
+            ..metadata
+        })?;
 
-    pub fn save_all_metadata(&self, metadata: &[Metadata]) -> Result<(), MetadataError> {
-        if let Some(parent) = self.metadata_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        let content = serde_json::to_string_pretty(metadata)?;
-        fs::write(&self.metadata_path, content)?;
+        self.core.update_index(canonical, shard_path)?;
 
         Ok(())
     }
 
-    pub fn contains_path(&self, path: &Path) -> Result<bool, MetadataError> {
-        let canonical_path = fs::canonicalize(path)?;
-        let entries = self.load_all_metadata()?;
-
-        Ok(entries.into_iter().any(|entry| entry.file_path == canonical_path))
-    }
-
     pub fn find_metadata(&self, path: &Path) -> Result<Option<Metadata>, MetadataError> {
-        let canonical_path = fs::canonicalize(path)?;
-        let entries = self.load_all_metadata()?;
+        let canonical = self.core.canonicalize(path)?;
 
-        Ok(entries.into_iter().find(|entry| entry.file_path == canonical_path))
+        // 1. Look up shard in global index
+        let shard_path = match self.core.lookup_shard(&canonical) {
+            Some(p) => p,
+            None => return Ok(None),
+        };
+
+        // 2. Load shard and search
+        let local = LocalMetadataManager::new(shard_path);
+        Ok(local.get(&canonical)?)
     }
 
-    pub fn update_metadata(&self, metadata: Metadata) -> Result<(), MetadataError> {
-        let mut entries = self.load_all_metadata()?;
-        let canonical_path = fs::canonicalize(&metadata.file_path)?;
+    pub fn contains_path(&self, path: &Path) -> Result<bool, MetadataError> {
+        Ok(self.find_metadata(path)?.is_some())
+    }
 
-        if let Some(existing) = entries.iter_mut().find(|entry| entry.file_path == canonical_path) {
-            existing.file_size = metadata.file_size;
-            existing.sha256 = metadata.sha256.clone();
-            existing.modified_at = metadata.modified_at;
-            existing.updated_at = Utc::now();
-        } else {
-            entries.push(Metadata {
-                file_path: canonical_path,
-                file_size: metadata.file_size,
-                sha256: metadata.sha256.clone(),
-                created_at: metadata.created_at,
-                modified_at: metadata.modified_at,
-                updated_at: Utc::now(),
-            });
+    pub fn remove_metadata(&self, path: &Path) -> Result<bool, MetadataError> {
+        let canonical = self.core.canonicalize(path)?;
+
+        // 1. Look up shard
+        let shard_path = match self.core.lookup_shard(&canonical) {
+            Some(p) => p,
+            None => return Ok(false),
+        };
+
+        // 2. Remove from shard
+        let local = LocalMetadataManager::new(shard_path.clone());
+        let removed = local.remove(&canonical)?;
+
+        // 3. Update index if removed
+        if removed {
+            let mut index = self.core.load_index()?;
+            index.map.remove(&canonical);
+            self.core.save_index(&index)?;
         }
 
-        self.save_all_metadata(&entries)
+        Ok(removed)
     }
 }
