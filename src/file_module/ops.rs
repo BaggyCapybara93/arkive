@@ -20,21 +20,22 @@ impl<'a> FileManager<'a> {
         }
     }
 
-    pub(crate) fn central_metadata_file(root: &Path) -> Result<PathBuf, FileManagerError> {
+    pub(crate) fn central_metadata_root(root: &Path) -> Result<PathBuf, FileManagerError> {
         let root_dir = if root.is_dir() {
             root.to_path_buf()
         } else {
             root.parent()
                 .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| Path::new(".").to_path_buf())
+                .ok_or_else(|| FileManagerError::InvalidInput("Invalid destination path".into()))?
         };
 
+        // Metadata directory, not a file
         Ok(root_dir.join(".arkive_metadata"))
     }
 
     pub(crate) fn metadata_manager_for_destination(&self, dst: &Path) -> Result<MetadataManager, FileManagerError> {
-        let metadata_path = Self::central_metadata_file(dst)?;
-        Ok(MetadataManager::new(metadata_path))
+        let metadata_root = Self::central_metadata_root(dst)?;
+        Ok(MetadataManager::new(metadata_root))
     }
 
     pub(crate) fn save_metadata_for_file(&self, path: &Path, manager: &MetadataManager) -> Result<(), FileManagerError> {
@@ -95,15 +96,16 @@ impl<'a> FileManager<'a> {
             return Ok(());
         }
 
-        let manager = self.metadata_manager_for_destination(path)?;
+        let manager = self.metadata_manager_for_destination(self.file_dest.as_path())?;
+
         manager.remove_metadata(path)
             .map(|_| ())
-            .map_err(|e| FileManagerError::InvalidInput(format!("Metadata error: {e}")))
+            .map_err(|e| FileManagerError::InvalidInput(format!("Metadata error: {e}")))    
     }
 
     /// Move a file or directory to the destination.
     pub fn move_path(&self) -> Result<(), FileManagerError> {
-        let _ = self.lock.lock();
+        let _guard = self.lock.lock();
         let src = self.file_path.as_path();
         let dst = self.file_dest.as_path();
 
@@ -111,6 +113,7 @@ impl<'a> FileManager<'a> {
             valid_directory(src)?;
         }
 
+        // Pre-collect old paths for metadata removal
         let source_paths = if self.settings.enable_metadata && src.is_dir() {
             Some(self.collect_file_paths(src)?)
         } else {
@@ -128,14 +131,15 @@ impl<'a> FileManager<'a> {
         fs::rename(src, &dest_path)?;
 
         if self.settings.enable_metadata {
+            let manager = self.metadata_manager_for_destination(&dest_path)?;
+
             if dest_path.is_file() {
-                let manager = self.metadata_manager_for_destination(&dest_path)?;
                 self.save_metadata_for_file(&dest_path, &manager)?;
             } else if dest_path.is_dir() {
-                let manager = self.metadata_manager_for_destination(&dest_path)?;
                 self.save_metadata_for_directory(src, &dest_path, &manager)?;
             }
 
+            // Remove old metadata
             if let Some(paths) = source_paths {
                 for old_path in paths {
                     self.remove_metadata_for_file(&old_path)?;
@@ -154,7 +158,7 @@ impl<'a> FileManager<'a> {
 
     /// Delete a file or directory.
     pub fn delete_path(&self, path: impl Into<PathBuf>, recursive: bool, to_trash: bool) -> Result<(), FileManagerError> {
-        let _ = self.lock.lock();
+        let _guard = self.lock.lock();
         let src = path.into();
         let src_path = src.as_path();
 
@@ -162,14 +166,13 @@ impl<'a> FileManager<'a> {
             valid_directory(src_path)?;
         }
 
+        // Trash handling
         if to_trash && self.settings.enable_trash {
             let trash = super::trash::trash_dir()?;
 
-            // Extract filename
             let file_name = src_path.file_name()
                 .ok_or_else(|| FileManagerError::InvalidInput("Invalid file name".into()))?;
 
-            // Build destination inside trash
             let dst = trash.join(file_name);
 
             if self.settings.dry_run {
@@ -179,11 +182,15 @@ impl<'a> FileManager<'a> {
                 return Ok(());
             }
 
-            // Move instead of delete
             fs::rename(src_path, dst)?;
+
             if self.settings.verbose {
                 println!("Moved {:?} to trash", src_path);
             }
+
+            // Remove metadata
+            self.remove_metadata_for_file(src_path)?;
+
             return Ok(());
         }
 
@@ -204,9 +211,6 @@ impl<'a> FileManager<'a> {
             }
 
             fs::remove_dir_all(src_path)?;
-            if self.settings.verbose {
-                println!("Permanently deleted directory {:?}", src_path);
-            }
         } else {
             if self.settings.dry_run {
                 if self.settings.verbose {
@@ -216,9 +220,13 @@ impl<'a> FileManager<'a> {
             }
 
             fs::remove_file(src_path)?;
-            if self.settings.verbose {
-                println!("Permanently deleted file {:?}", src_path);
-            }
+        }
+
+        // Remove metadata
+        self.remove_metadata_for_file(src_path)?;
+
+        if self.settings.verbose {
+            println!("Permanently deleted {:?}", src_path);
         }
 
         Ok(())

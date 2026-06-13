@@ -8,7 +8,7 @@ use super::manager::FileManager;
 /// Recursively copy a directory and its contents to the destination.
 pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), FileManagerError> {
     if src.is_dir() {
-        crate::file_validation::handlers::valid_directory(src)?;
+        valid_directory(src)?;
     }
 
     ensure_not_nested(src, dst)?;
@@ -43,16 +43,16 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), FileManagerError
     Ok(())
 }
 
-/// Copy a file or directory to the destination.
 impl<'a> FileManager<'a> {
     /// Copy a file or directory to the destination.
     pub fn copy_path(&self, recursive: bool) -> Result<(), FileManagerError> {
-        let _ = self.lock.lock();
+        let _guard = self.lock.lock();
         let src = self.file_path.as_path();
         let dst = self.file_dest.as_path();
 
         if src.is_dir() {
             valid_directory(src)?;
+
             if !recursive {
                 return Err(FileManagerError::InvalidInput(format!(
                     "Use --recursive to copy directories: {:?}",
