@@ -1,6 +1,5 @@
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use crate::file_module::compress::CompressionMethod;
 
@@ -32,9 +31,6 @@ pub struct Config {
     #[serde(default = "default_gzip")]
     pub compression_method: CompressionMethod,
     
-    /// Last used directory for operations
-    pub last_used_directory: Option<PathBuf>,
-    
     /// Timestamp when config was created (ISO 8601 format)
     #[serde(with = "chrono::serde::ts_seconds")]
     pub created_at: DateTime<Utc>,
@@ -62,7 +58,6 @@ impl Default for Config {
             recursive: false,
             enable_metadata: false,
             compression_method: CompressionMethod::Gzip,
-            last_used_directory: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

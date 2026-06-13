@@ -19,12 +19,7 @@ fn main() -> Result<(), AppError> {
     let config_manager = ConfigManager::new()?;
     config_manager.create_default_config()?;
 
-    let mut config = config_manager.load()?;
-    
-    if let Some(ref last_dir) = cli.last_used_directory {
-        config.last_used_directory = Some(last_dir.clone());
-        config_manager.save(&config)?;
-    }
+    let config = config_manager.load()?;
 
     let settings = Settings {
         enable_trash: if cli.no_trash { false } else { config.enable_trash },
