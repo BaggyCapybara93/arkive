@@ -31,8 +31,8 @@ impl LocalMetadataManager {
             return Ok(ShardData::default());
         }
 
-        let data = fs::read_to_string(&self.shard_path)?;
-        let shard_data: ShardData = serde_json::from_str(&data)?;
+        let data = fs::read_to_string(&self.shard_path).map_err(|e| MetadataError::CorruptShard(format!("Failed to read shard file: {}", e)))?;
+        let shard_data: ShardData = serde_json::from_str(&data).map_err(|e| MetadataError::CorruptShard(format!("Failed to parse shard file: {}", e)))?;
         Ok(shard_data)
     }
 
@@ -56,7 +56,7 @@ impl LocalMetadataManager {
             shard.entries.push(metadata);
         }
 
-        self.save(&shard)
+        self.save(&shard).map_err(|e| MetadataError::CorruptShard(format!("Failed to save shard after upsert: {}", e)))
     }
 
     pub fn get(&self, canonical_path: &Path) -> Result<Option<Metadata>, MetadataError> {
@@ -73,7 +73,7 @@ impl LocalMetadataManager {
         let removed = shard.entries.len() != before;
 
         if removed {
-            self.save(&shard)?;
+            self.save(&shard).map_err(|e| MetadataError::CorruptShard(format!("Failed to save shard after remove: {}", e)))?;
         }
 
         Ok(removed)

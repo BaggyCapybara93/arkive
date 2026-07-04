@@ -36,8 +36,8 @@ impl CoreMetadataManager {
             return Ok(GlobalIndex::default());
         }
 
-        let content = fs::read_to_string(&self.index_path)?;
-        let index = serde_json::from_str(&content).unwrap_or_default();
+        let content = fs::read_to_string(&self.index_path).map_err(|e| MetadataError::CorruptIndex(format!("Failed to read index file: {}", e)))?;
+        let index = serde_json::from_str(&content).map_err(|e| MetadataError::CorruptIndex(format!("Failed to parse index file: {}", e)))?;
         Ok(index)
     }
 
@@ -61,6 +61,11 @@ impl CoreMetadataManager {
         self.shards_dir.join(format!("dir_{}.json", dir_name))
     }
 
+    pub fn lookup_shard(&self, canonical_path: &Path) -> Result<Option<PathBuf>, MetadataError> {
+        let index = self.load_index()?;
+        Ok(index.map.get(canonical_path).cloned())
+    }
+
     //Index Updating
     pub fn update_index (
         &self, canonical_path: PathBuf,
@@ -68,11 +73,6 @@ impl CoreMetadataManager {
     ) -> Result<(), MetadataError> {
         let mut index = self.load_index()?;
         index.map.insert(canonical_path, shard_path);
-        self.save_index(&index)
-    }
-
-    pub fn lookup_shard(&self, canonical_path: &Path) -> Option<PathBuf> {
-        let index = self.load_index().unwrap_or_default();
-        index.map.get(canonical_path).cloned()
+        self.save_index(&index).map_err(|e| MetadataError::CorruptIndex(format!("Failed to update index: {}", e)))
     }
 }

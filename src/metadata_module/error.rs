@@ -10,4 +10,10 @@ pub enum MetadataError {
 
     #[error("Invalid metadata input: {0}")]
     InvalidInput(String),
+
+    #[error("Corrupt index file: {0}")]
+    CorruptIndex(String),
+
+    #[error("Corrupted shard data: {0}")]
+    CorruptShard(String),
 }

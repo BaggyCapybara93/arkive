@@ -35,26 +35,20 @@ impl MetadataManager {
     pub fn find_metadata(&self, path: &Path) -> Result<Option<Metadata>, MetadataError> {
         let canonical = self.core.canonicalize(path)?;
 
-        // 1. Look up shard in global index
-        let shard_path = match self.core.lookup_shard(&canonical) {
+        let shard_path = match self.core.lookup_shard(&canonical)? {
             Some(p) => p,
             None => return Ok(None),
         };
 
-        // 2. Load shard and search
         let local = LocalMetadataManager::new(shard_path);
         Ok(local.get(&canonical)?)
-    }
-
-    pub fn contains_path(&self, path: &Path) -> Result<bool, MetadataError> {
-        Ok(self.find_metadata(path)?.is_some())
     }
 
     pub fn remove_metadata(&self, path: &Path) -> Result<bool, MetadataError> {
         let canonical = self.core.canonicalize(path)?;
 
         // 1. Look up shard
-        let shard_path = match self.core.lookup_shard(&canonical) {
+        let shard_path = match self.core.lookup_shard(&canonical)? {
             Some(p) => p,
             None => return Ok(false),
         };
@@ -67,7 +61,7 @@ impl MetadataManager {
         if removed {
             let mut index = self.core.load_index()?;
             index.map.remove(&canonical);
-            self.core.save_index(&index)?;
+            self.core.save_index(&index).map_err(|e| MetadataError::CorruptIndex(format!("Failed to save index after removal: {}", e)))?;
         }
 
         Ok(removed)
