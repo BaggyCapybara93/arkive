@@ -7,4 +7,3 @@ pub mod structs;
 
 pub use error::MetadataError;
 pub use manager::MetadataManager;
-pub use local_manager::LocalMetadataManager;
