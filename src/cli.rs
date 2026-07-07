@@ -150,11 +150,8 @@ fn handle_deduplicate(path: &Path, to_trash: bool, settings: &Settings) -> Resul
 }
 
 fn handle_cleanup(path: Option<&Path>, options: cleanup::CleanupOptions, settings: &Settings) -> Result<(), AppError> {
-    let path_str = match path {
-        Some(p) => p.to_string_lossy().to_string(),
-        None => std::env::current_dir()?.to_string_lossy().to_string(),
-    };
-    let fm = FileManager::new(&path_str, "", settings);
+    let path = path.map_or(Path::new("."), |p| p);
+    let fm = FileManager::new(path, "", settings);
     fm.cleanup(options)?;
     Ok(())
 }
