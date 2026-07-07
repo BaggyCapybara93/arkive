@@ -138,7 +138,10 @@ fn handle_compress(src: &Path, dest: &Path, method: Option<CompressionMethod>, s
 }
 
 fn handle_batch(file: &Path, settings: &Settings) -> Result<(), AppError> {
-    let batch_handler = BatchHandler::from_file(file.to_string_lossy().as_ref(), settings)?;
+    let file_str = file.to_str()
+        .ok_or_else(|| AppError::InvalidInput(format!("Batch file path contains invalid UTF‑8: {:?}", file)))?;
+
+    let batch_handler = BatchHandler::from_file(file_str, settings)?;
     batch_handler.run()?;
     Ok(())
 }
