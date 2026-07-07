@@ -9,6 +9,12 @@ pub enum FileManagerError {
     #[error("Hash mismatch after copy — file may be corrupted")]
     HashMismatch,
 
+    #[error("Permission denied: {0}")]
+    PermissionDenied(String),
+
+    #[error("Invalid directory: {0}")]
+    InvalidDirectory(String),
+
     #[error("Invalid input: {0}")]
     InvalidInput(String),
 }

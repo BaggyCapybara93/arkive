@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::path::{Path};
+use std::fs::{self, File, OpenOptions};
 use crate::file_module::FileManagerError;
 use crate::file_validation::hash::hash_file;
 
@@ -18,15 +19,75 @@ pub fn ensure_not_nested(src: &Path, dst: &Path) -> Result<(), FileManagerError>
     Ok(())
 }
 
+// Validates that the path can be accessed
+pub fn validate_access_permissions(path: &Path) -> Result<(), FileManagerError> {
+    // Canonicalize
+    let canon = path.canonicalize().map_err(|err| {
+        match err.kind() {
+            std::io::ErrorKind::PermissionDenied =>
+                FileManagerError::PermissionDenied(format!("Cannot access {:?}: {err}", path)),
+            _ =>
+                FileManagerError::InvalidDirectory(format!("Invalid path {:?}: {err}", path)),
+        }
+    })?;
+
+    // Reject symlinks 
+    let meta = fs::symlink_metadata(&canon)?;
+    if meta.file_type().is_symlink() {
+        return Err(FileManagerError::PermissionDenied(format!(
+            "Symlink not allowed: {:?}", canon
+        )));
+    }
+
+    // Check read permission
+    if meta.is_dir() {
+        if fs::read_dir(&canon).is_err() {
+            return Err(FileManagerError::PermissionDenied(format!(
+                "Cannot read directory {:?}", canon
+            )));
+        }
+    } else {
+        if File::open(&canon).is_err() {
+            return Err(FileManagerError::PermissionDenied(format!(
+                "Cannot read file {:?}", canon
+            )));
+        }
+    }
+
+    // Check write permission (only if file exists)
+    if meta.is_file() {
+        if OpenOptions::new().write(true).open(&canon).is_err() {
+            return Err(FileManagerError::PermissionDenied(format!(
+                "Cannot write to {:?}", canon
+            )));
+        }
+    }
+
+    // Check delete permission
+    if let Some(parent) = canon.parent() {
+        if OpenOptions::new().write(true).open(parent).is_err() {
+            return Err(FileManagerError::PermissionDenied(format!(
+                "Cannot delete {:?} (parent not writable)", canon
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+
+// Validates that the path is a directory and accessible
 pub fn valid_directory(path: &Path) -> Result<(), FileManagerError> {
+    validate_access_permissions(path)?;
+
     if !path.exists() {
-        return Err(FileManagerError::InvalidInput(format!(
+        return Err(FileManagerError::InvalidDirectory(format!(
             "Directory {:?} does not exist", path
         )));
     }
 
     if !path.is_dir() {
-        return Err(FileManagerError::InvalidInput(format!(
+        return Err(FileManagerError::InvalidDirectory(format!(
             "Path {:?} is not a directory", path
         )));
     }
