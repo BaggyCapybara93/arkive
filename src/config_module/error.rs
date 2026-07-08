@@ -18,14 +18,6 @@ pub enum ConfigError {
     /// Failed to write config file
     #[error("Failed to write config file: {0}")]
     WriteError(std::io::Error),
-    
-    /// Config file not found
-    #[error("Config file not found at: {0}")]
-    NotFound(String),
-    
-    /// Failed to create default config
-    #[error("Failed to create default config: {0}")]
-    CreateError(std::io::Error),
 }
 
 impl From<std::io::Error> for ConfigError {
