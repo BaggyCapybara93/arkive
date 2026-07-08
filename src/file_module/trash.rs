@@ -7,8 +7,11 @@ use crate::settings::Settings;
 /// Get the path to the arkive trash directory.
 /// Creates the directory if it doesn't exist.
 pub fn trash_dir() -> Result<PathBuf, FileManagerError> {
-    let cwd = std::env::current_dir()?;
-    let trash = cwd.join("arkive_trash");
+    let trash = if let Some(home) = std::env::var_os("HOME") {
+        PathBuf::from(home).join("arkive_trash")
+    } else {
+        std::env::current_dir()?.join("arkive_trash")
+    };
 
     if !trash.exists() {
         std::fs::create_dir_all(&trash)?;
