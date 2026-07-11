@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use crate::file_module::{FileManager, FileManagerError};
+use crate::file_module::cleanup::CleanupOptions;
 use std::sync::Arc;
 use crate::settings::Settings;
 
@@ -25,6 +26,7 @@ pub struct Job {
     pub destination: Option<String>,
     pub recursive: Option<bool>,
     pub to_trash: Option<bool>,
+    pub cleanup: Option<bool>, //Cleanup after operation, can cause decrease in performance if set to true 
     pub compression_method: Option<BatchCompressionMethod>,
     #[serde(skip)]
     pub settings: Option<Arc<Settings>>,
@@ -60,6 +62,12 @@ impl Job {
                 let method = compression_method.unwrap_or(settings.compression_method);
                 fm.compress_path(method)?;
             }
+        }
+        
+        if self.cleanup.unwrap_or(false) {
+            // TEMP: Create default cleanup options with all flags enabled
+            let cleanup_options = CleanupOptions::default();
+            fm.cleanup(cleanup_options)?;
         }
 
         Ok(())
