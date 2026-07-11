@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use crate::batch_module::{Job, BatchError};
+use crate::batch_module::{Job};
 
 #[derive(Debug, Deserialize)]
 pub struct BatchFile {
