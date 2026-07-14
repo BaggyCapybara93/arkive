@@ -11,7 +11,6 @@ use crate::file_module::compress::CompressionMethod;
 #[derive(Parser)]
 #[command(
         name = "arkive", 
-        version = "0.1", 
         about = "A simple file management tool"
 )]
 
