@@ -25,7 +25,6 @@ pub struct Job {
     pub source: String,
     pub destination: Option<String>,
     pub recursive: Option<bool>,
-    pub to_trash: Option<bool>,
     pub cleanup: Option<bool>, //Cleanup after operation, can cause decrease in performance if set to true 
     pub compression_method: Option<BatchCompressionMethod>,
     #[serde(skip)]
