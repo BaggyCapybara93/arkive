@@ -20,7 +20,6 @@ impl From<BatchCompressionMethod> for crate::file_module::compress::CompressionM
 
 pub struct BatchHandler {
     pub commands: Vec<Job>,
-    pub settings: Arc<Settings>,
 }
 
 impl BatchHandler {
@@ -30,7 +29,7 @@ impl BatchHandler {
             job.settings = Some(settings.clone());
             job
         }).collect();
-        BatchHandler { commands, settings }
+        BatchHandler { commands }
     }
 
     pub fn from_file(path: &str, settings: &Settings) -> Result<Self, BatchError> {
@@ -45,7 +44,7 @@ impl BatchHandler {
                     job
                 })
                 .collect();
-            return Ok(BatchHandler { commands, settings: Arc::new(settings.clone()) });
+            return Ok(BatchHandler { commands });
         }
         
         // Fall back to plain Vec<Job> (old format)
