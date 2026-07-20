@@ -207,6 +207,34 @@ arkive cleanup --path /path/to/directory --deduplicate --scan-unused
 arkive cleanup --dry-run --empty-trash --deduplicate
 ```
 
+## Branch Overview
+
+This project uses a traditional branching model to maintain stability while allowing active development.
+
+### Branches
+
+**`master`**
+- Primary development branch
+- Contains the latest features and improvements
+- May contain breaking changes during active development
+
+**`stable`**
+- Production-ready, tested build
+- Should not be modified except for bug fixes and verified updates
+
+### Release Process
+
+1. Complete development and testing on `master`
+2. Create a release tag (e.g., `v1.0.0`) from `master`
+3. Merge release tag into `stable`
+4. Update `stable` branch to the tagged version
+5. Announce release with changelog
+
+### Bug Fixes
+
+- Critical bug fixes can be cherry-picked from `master` to `stable`
+- Non-critical fixes should be developed on `master` and merged normally
+
 ## License
 
 This project is licensed under the MIT License
