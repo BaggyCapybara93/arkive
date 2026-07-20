@@ -5,6 +5,7 @@ pub mod dedup;
 pub mod error;
 pub mod manager;
 pub mod ops;
+pub mod remove;
 pub mod trash;
 
 pub use error::FileManagerError;

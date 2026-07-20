@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::batch_module::BatchHandler;
 use crate::error::AppError;
 use crate::file_module::cleanup;
+use crate::file_module::remove;
 use crate::file_module::trash;
 use crate::file_module::FileManager;
 use crate::settings::Settings;
@@ -106,6 +107,24 @@ pub enum Command {
         #[arg(long, help = "Scan for and remove empty directories")]
         scan_empty_dirs: bool,
     },
+
+    /// Remove files based on name pattern or extension
+    Remove {
+        /// Path to scan (default: current directory)
+        path: PathBuf,
+
+        /// Pattern to match file names (supports glob patterns like *.log, *.txt, or specific names)
+        #[arg(short, long)]
+        pattern: String,
+
+        /// Extension to match (e.g., .log, .txt)
+        #[arg(short, long, conflicts_with = "pattern")]
+        extension: Option<String>,
+
+        /// Keep files in arkive trash instead of permanently deleting
+        #[arg(long, help = "Move files to arkive trash")]
+        trash: bool,
+    },
 }
 
 fn handle_move(src: &Path, dest: &Path, recursive: bool, settings: &Settings) ->  Result<(), AppError> {
@@ -158,6 +177,17 @@ fn handle_cleanup(path: Option<&Path>, options: cleanup::CleanupOptions, setting
     Ok(())
 }
 
+fn handle_remove(path: &Path, pattern: &str, extension: Option<&str>, trash: bool, settings: &Settings) -> Result<(), AppError> {
+    let fm = FileManager::new(path, "", settings);
+    let options = remove::RemoveOptions {
+        trash,
+        dry_run: settings.dry_run,
+        verbose: settings.verbose,
+    };
+    fm.remove_files(pattern, extension, options)?;
+    Ok(())
+}
+
 fn handle_empty_trash(settings: &Settings) -> Result<(), AppError> {
     trash::empty_trash(settings)?;
     Ok(())
@@ -186,5 +216,6 @@ pub fn cli_handler(cmd: Command, settings: &Settings) -> Result<(), AppError> {
             };
             handle_cleanup(path.as_deref(), options, settings)
         }
+        Command::Remove { path, pattern, extension, trash } => handle_remove(&path, &pattern, extension.as_deref(), trash, settings),
     }
 }
