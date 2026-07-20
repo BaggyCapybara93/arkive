@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use std::{fs, path::{Path, PathBuf}};
+use std::{fs, path::Path};
 
 use crate::file_validation::hash::hash_file;
 use crate::metadata_module::{MetadataError};
