@@ -69,7 +69,7 @@ dependencies = [
 
 [[package]]
 name = "arkive"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "chrono",
  "clap",
