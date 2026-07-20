@@ -1,6 +1,7 @@
 pub mod cleanup;
 pub mod compress;
 pub mod copy;
+pub mod metadata;
 pub mod dedup;
 pub mod error;
 pub mod manager;
