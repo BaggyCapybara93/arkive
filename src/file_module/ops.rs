@@ -52,7 +52,7 @@ impl<'a> FileManager<'a> {
 
     /// Move a file or directory to the destination.
     pub fn move_path(&self) -> Result<(), FileManagerError> {
-        let _guard = self.lock.lock();
+        let _guard = self.acquire_lock();
         let src = self.file_path.as_path();
         let dst = self.file_dest.as_path();
 
@@ -105,7 +105,7 @@ impl<'a> FileManager<'a> {
 
     /// Delete a file or directory.
     pub fn delete_path(&self, path: impl Into<PathBuf>, recursive: bool, to_trash: bool) -> Result<(), FileManagerError> {
-        let _guard = self.lock.lock();
+        let _guard = self.acquire_lock();
         let src = path.into();
         let src_path = src.as_path();
 

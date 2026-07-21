@@ -6,7 +6,7 @@ use crate::settings::Settings;
 pub struct FileManager<'a> {
     pub file_path: PathBuf,
     pub file_dest: PathBuf,
-    pub lock: Mutex<()>,
+    lock: Mutex<()>,
     pub settings: &'a Settings,
 }
 
@@ -18,5 +18,11 @@ impl<'a> FileManager<'a> {
             lock: Mutex::new(()),
             settings,
         }
+    }
+
+    /// Acquires an exclusive lock on the FileManager.
+    /// Call this method before performing operations that require mutual exclusion.
+    pub fn acquire_lock(&self) -> parking_lot::MutexGuard<'_, ()> {
+        self.lock.lock()
     }
 }

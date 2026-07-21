@@ -52,7 +52,7 @@ fn create_encoder(method: &CompressionMethod, file: fs::File) -> Result<Box<dyn 
 impl<'a> FileManager<'a> {
     /// Compress a file or directory into a tar.gz archive.
     pub fn compress_path(&self, method: CompressionMethod) -> Result<(), FileManagerError> {
-        let _ = self.lock.lock();
+        let _guard = self.acquire_lock();
         let src = self.file_path.as_path();
         let dst = self.file_dest.as_path();
 
