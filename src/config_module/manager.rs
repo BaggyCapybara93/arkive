@@ -72,6 +72,10 @@ impl ConfigManager {
 
 impl Default for ConfigManager {
     fn default() -> Self {
-        Self::new().expect("Failed to create ConfigManager")
+        Self::new().unwrap_or_else(|_| {
+            let temp_dir = std::env::temp_dir();
+            let config_path = temp_dir.join("arkive_config.json");
+            ConfigManager { config_path }
+        })
     }
 }
