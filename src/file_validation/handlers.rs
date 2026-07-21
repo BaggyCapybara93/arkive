@@ -1,7 +1,25 @@
 use std::path::{Path};
+use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use crate::file_module::FileManagerError;
 use crate::file_validation::hash::hash_file;
+
+pub fn sanitize_file_name(file_name: &OsStr) -> String {
+    // Check for path traversal attempts
+    if file_name.to_string_lossy().contains("..") {
+        return String::new();
+    }
+    
+    // Get the file name as a string
+    let name = file_name.to_string_lossy();
+    
+    // Return empty if the name is empty or contains only path separators
+    if name.is_empty() || name == "/" || name == "\\" {
+        return String::new();
+    }
+    
+    name.to_string()
+}
 
 pub fn ensure_not_nested(src: &Path, dst: &Path) -> Result<(), FileManagerError>{
     let src = src.canonicalize()?;

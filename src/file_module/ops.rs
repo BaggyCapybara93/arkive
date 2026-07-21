@@ -2,7 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::file_validation::handlers::{
-    valid_directory
+    valid_directory,
+    sanitize_file_name,
 };
 use crate::file_module::error::FileManagerError;
 
@@ -13,7 +14,11 @@ impl<'a> FileManager<'a> {
         if dst.is_dir() {
             let file_name = src.file_name()
                 .ok_or_else(|| FileManagerError::InvalidInput("Invalid source file name".into()))?;
-            Ok(dst.join(file_name))
+            
+            // Sanitize file name to prevent path traversal
+            let sanitized_name = sanitize_file_name(file_name);
+            
+            Ok(dst.join(Path::new(&sanitized_name)))
         } else {
             Ok(dst.to_path_buf())
         }
