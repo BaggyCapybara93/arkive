@@ -47,7 +47,16 @@ impl Job {
             WorkType::Move => {
                 if recursive {
                     fm.copy_path(true)?;
-                    fm.delete_path(self.source.clone(), true, false)?;
+                    // Only delete source if copy succeeded (destination exists)
+                    if fm.file_dest.exists() {
+                        fm.delete_path(self.source.clone(), true, false)?;
+                    } else {
+                        // Rollback on failure
+                        fm.delete_path(&fm.file_dest, true, false)?;
+                        return Err(FileManagerError::InvalidInput(
+                            "Recursive move failed: destination not created".to_string()
+                        ));
+                    }
                 } else {
                     fm.move_path()?;
                 }
