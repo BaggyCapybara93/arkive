@@ -24,19 +24,6 @@ impl<'a> FileManager<'a> {
         }
     }
 
-    pub(crate) fn central_metadata_root(root: &Path) -> Result<PathBuf, FileManagerError> {
-        let root_dir = if root.is_dir() {
-            root.to_path_buf()
-        } else {
-            root.parent()
-                .map(|p| p.to_path_buf())
-                .ok_or_else(|| FileManagerError::InvalidInput("Invalid destination path".into()))?
-        };
-
-        // Metadata directory, not a file
-        Ok(root_dir.join(".arkive_metadata"))
-    }
-
     pub(crate) fn collect_file_paths(&self, root: &Path) -> Result<Vec<PathBuf>, FileManagerError> {
         let mut paths = Vec::new();
 

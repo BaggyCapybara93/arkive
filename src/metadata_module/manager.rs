@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::metadata_module::{
     core_manager::CoreMetadataManager,
@@ -12,8 +12,9 @@ pub struct MetadataManager {
 }
 
 impl MetadataManager {
-    pub fn new(root: PathBuf) -> Self {
-        Self { core: CoreMetadataManager::new(root), }
+    pub fn new() -> Result<Self, MetadataError> {
+        let core = CoreMetadataManager::new()?;
+        Ok(Self { core })
     }
 
     pub fn update_metadata(&self, metadata: Metadata) -> Result<(), MetadataError> {

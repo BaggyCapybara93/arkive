@@ -13,17 +13,23 @@ pub struct GlobalIndex {
     pub map: HashMap<PathBuf, PathBuf>,
 }
 pub struct CoreMetadataManager {
-    root: PathBuf,
     index_path: PathBuf,
     shards_dir: PathBuf,
 }
 
 impl CoreMetadataManager {
-    pub fn new(root: PathBuf) -> Self {
-        let index_path = root.join("index.json");
-        let shards_dir = root.join("shards");
+    pub fn new() -> Result<Self, MetadataError> {
+        let exe_dir = std::env::current_exe()
+            .map_err(|e| MetadataError::PathError(format!("Failed to get executable path: {}", e)))?
+            .parent()
+            .ok_or_else(|| MetadataError::PathError("Executable has no parent directory".to_string()))?
+            .to_path_buf();
+        
+        let core_dir = exe_dir.join("core");
+        let index_path = core_dir.join("index.json");
+        let shards_dir = core_dir.join("shards");
 
-        Self { root, index_path, shards_dir }
+        Ok(Self { index_path, shards_dir })
     }
 
     pub fn canonicalize(&self, path: &Path) -> Result<PathBuf, MetadataError> {

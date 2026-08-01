@@ -6,9 +6,8 @@ use crate::metadata_module::{handler::MetadataHandler, MetadataManager};
 use crate::file_module::error::FileManagerError;
 
 impl<'a> FileManager <'a> {
-    pub(crate) fn metadata_manager_for_destination(&self, dst: &Path) -> Result<MetadataManager, FileManagerError> {
-        let metadata_root = Self::central_metadata_root(dst)?;
-        Ok(MetadataManager::new(metadata_root))
+    pub(crate) fn metadata_manager_for_destination(&self, _dst: &Path) -> Result<MetadataManager, FileManagerError> {
+        Ok(MetadataManager::new().map_err(|e| FileManagerError::InvalidInput(e.to_string()))?)
     }
 
     pub(crate) fn save_metadata_for_file(&self, path: &Path, manager: &MetadataManager) -> Result<(), FileManagerError> {

@@ -16,4 +16,7 @@ pub enum MetadataError {
 
     #[error("Corrupted shard data: {0}")]
     CorruptShard(String),
+
+    #[error("Path error: {0}")]
+    PathError(String),
 }
