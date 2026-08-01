@@ -10,6 +10,7 @@ pub enum WorkType {
     Move,
     Copy,
     Compress,
+    Rename,
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq)]
@@ -47,7 +48,16 @@ impl Job {
             WorkType::Move => {
                 if recursive {
                     fm.copy_path(true)?;
-                    fm.delete_path(self.source.clone(), true, false)?;
+                    // Only delete source if copy succeeded (destination exists)
+                    if fm.file_dest.exists() {
+                        fm.delete_path(self.source.clone(), true, false)?;
+                    } else {
+                        // Rollback on failure
+                        fm.delete_path(&fm.file_dest, true, false)?;
+                        return Err(FileManagerError::InvalidInput(
+                            "Recursive move failed: destination not created".to_string()
+                        ));
+                    }
                 } else {
                     fm.move_path()?;
                 }
@@ -61,7 +71,9 @@ impl Job {
                 let method = compression_method.unwrap_or(settings.compression_method);
                 fm.compress_path(method)?;
             }
+            WorkType::Rename => fm.rename_path()?,
         }
+        
         
         if self.cleanup.unwrap_or(false) {
             // TEMP: Create default cleanup options with all flags enabled

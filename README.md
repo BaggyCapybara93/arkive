@@ -85,6 +85,24 @@ arkive compress file1.txt backup/file1.txt.gz
 
 # Compress a directory
 arkive compress myproject/ backup/myproject.tar.gz
+
+### Rename Files
+```bash
+arkive rename <source> <destination>
+```
+
+Rename a file or directory to a new name.
+
+**Examples:**
+```bash
+# Rename a single file
+arkive rename file1.txt file2.txt
+
+# Rename a file in a directory
+arkive rename file1.txt backup/file1.txt
+
+# Rename a directory
+arkive rename myproject/ myproject_v2/
 ```
 
 ### Batch Operations

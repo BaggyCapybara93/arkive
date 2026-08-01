@@ -46,7 +46,7 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), FileManagerError
 impl<'a> FileManager<'a> {
     /// Copy a file or directory to the destination.
     pub fn copy_path(&self, recursive: bool) -> Result<(), FileManagerError> {
-        let _guard = self.lock.lock();
+        let _guard = self.acquire_lock();
         let src = self.file_path.as_path();
         let dst = self.file_dest.as_path();
 
