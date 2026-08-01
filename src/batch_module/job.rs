@@ -10,6 +10,7 @@ pub enum WorkType {
     Move,
     Copy,
     Compress,
+    Rename,
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq)]
@@ -70,7 +71,9 @@ impl Job {
                 let method = compression_method.unwrap_or(settings.compression_method);
                 fm.compress_path(method)?;
             }
+            WorkType::Rename => fm.rename_path()?,
         }
+        
         
         if self.cleanup.unwrap_or(false) {
             // TEMP: Create default cleanup options with all flags enabled

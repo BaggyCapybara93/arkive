@@ -69,6 +69,15 @@ pub enum Command {
         method: Option<CompressionMethod>,
     },
 
+    /// Rename a file or directory
+    Rename {
+        /// Source name
+        name: PathBuf,
+
+        /// New name
+        new_name: PathBuf,
+    },
+
     /// Execute a batch of commands from a JSON file
     Batch {
         /// Path to batch file
@@ -155,6 +164,12 @@ fn handle_compress(src: &Path, dest: &Path, method: Option<CompressionMethod>, s
     Ok(())
 }
 
+fn handle_rename(src: &Path, dest: &Path, settings: &Settings) -> Result<(), AppError> {
+    let fm = FileManager::new(src, dest, settings);
+    fm.rename_path()?;
+    Ok(())
+}
+
 fn handle_batch(file: &Path, settings: &Settings) -> Result<(), AppError> {
     let file_str = file.to_str()
         .ok_or_else(|| AppError::InvalidInput(format!("Batch file path contains invalid UTF‑8: {:?}", file)))?;
@@ -203,6 +218,7 @@ pub fn cli_handler(cmd: Command, settings: &Settings) -> Result<(), AppError> {
         Command::Move { src, dest, recursive } => handle_move(&src, &dest, recursive, settings),
         Command::Copy { src, dest, recursive } => handle_copy(&src, &dest, recursive, settings),
         Command::Compress { src, dest, method } => handle_compress(&src, &dest, method, settings),
+        Command::Rename { name, new_name } => handle_rename(&name, &new_name, settings),
         Command::Batch { file } => handle_batch(&file, settings),
         Command::EmptyTrash => handle_empty_trash(settings),
         Command::ListTrash => handle_list_trash(settings),

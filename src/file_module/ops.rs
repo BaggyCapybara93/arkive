@@ -37,7 +37,7 @@ impl<'a> FileManager<'a> {
         Ok(root_dir.join(".arkive_metadata"))
     }
 
-    fn collect_file_paths(&self, root: &Path) -> Result<Vec<PathBuf>, FileManagerError> {
+    pub(crate) fn collect_file_paths(&self, root: &Path) -> Result<Vec<PathBuf>, FileManagerError> {
         let mut paths = Vec::new();
 
         for entry in fs::read_dir(root)? {
