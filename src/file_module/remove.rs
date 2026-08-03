@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::file_module::error::FileManagerError;
 use crate::file_module::FileManager;
@@ -51,9 +52,9 @@ impl<'a> FileManager<'a> {
             }
             
             if options.trash {
-                // Move to trash
                 let trash_path = self.get_trash_path(file_path);
-                fs::rename(file_path, &trash_path)?;
+                let target_path = Self::ensure_unique_trash_path(&trash_path)?;
+                fs::rename(file_path, &target_path)?;
             } else {
                 // Permanently delete
                 fs::remove_file(file_path)?;
@@ -149,14 +150,44 @@ impl<'a> FileManager<'a> {
     fn get_trash_path(&self, file_path: &Path) -> PathBuf {
         let src = self.file_path.as_path();
         let relative_path = file_path.strip_prefix(src).unwrap_or(file_path);
-        
-        // Get the trash directory
+
         let trash_dir = if self.settings.enable_trash {
             src.join(".arkive_trash")
         } else {
             src.to_path_buf()
         };
-        
+
         trash_dir.join(relative_path)
+    }
+
+    fn ensure_unique_trash_path(path: &Path) -> Result<PathBuf, FileManagerError> {
+        if !path.exists() {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            return Ok(path.to_path_buf());
+        }
+
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
+        let extension = path.extension().and_then(|e| e.to_str()).map(|e| format!(".{e}")).unwrap_or_default();
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+
+        let mut candidate = path.to_path_buf();
+        candidate.set_file_name(format!("{stem}-{timestamp}{extension}"));
+
+        if candidate.exists() {
+            return Err(FileManagerError::InvalidInput(format!(
+                "Trash destination already exists: {:?}", candidate
+            )));
+        }
+
+        if let Some(parent) = candidate.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        Ok(candidate)
     }
 }

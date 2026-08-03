@@ -4,7 +4,6 @@ use crate::batch_module::BatchHandler;
 use crate::error::AppError;
 use crate::file_module::cleanup;
 use crate::file_module::remove;
-use crate::file_module::trash;
 use crate::file_module::FileManager;
 use crate::settings::Settings;
 use crate::file_module::compress::CompressionMethod;
