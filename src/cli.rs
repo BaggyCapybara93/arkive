@@ -68,13 +68,25 @@ pub enum Command {
         method: Option<CompressionMethod>,
     },
 
-    /// Rename a file or directory
+    /// Rename a file or directory, or rename matching files/folders in a directory
     Rename {
-        /// Source name
+        /// Source path or directory to rename
         name: PathBuf,
 
-        /// New name
-        new_name: PathBuf,
+        /// New name for a single item, or a rename template such as "prefix-{name}{ext}" for bulk rename
+        new_name: Option<PathBuf>,
+
+        /// Pattern to match file or directory names (supports glob patterns like *.log, *.txt, or specific names)
+        #[arg(short, long)]
+        pattern: Option<String>,
+
+        /// Extension to match (e.g., .log, .txt)
+        #[arg(short, long, conflicts_with = "pattern")]
+        extension: Option<String>,
+
+        /// Rename matching files and folders recursively
+        #[arg(long, help = "Rename matching files and folders recursively")]
+        recursive: bool,
     },
 
     /// Execute a batch of commands from a JSON file
@@ -163,9 +175,25 @@ fn handle_compress(src: &Path, dest: &Path, method: Option<CompressionMethod>, s
     Ok(())
 }
 
-fn handle_rename(src: &Path, dest: &Path, settings: &Settings) -> Result<(), AppError> {
-    let fm = FileManager::new(src, dest, settings);
-    fm.rename_path()?;
+fn handle_rename(src: &Path, new_name: Option<&Path>, pattern: Option<&str>, extension: Option<&str>, recursive: bool, settings: &Settings) -> Result<(), AppError> {
+    if let Some(dest) = new_name {
+        if pattern.is_some() || extension.is_some() {
+            let fm = FileManager::new(src, "", settings);
+            fm.rename_matching_items(pattern, extension, recursive, &dest.to_string_lossy())?;
+        } else {
+            let fm = FileManager::new(src, dest, settings);
+            fm.rename_path()?;
+        }
+    } else if pattern.is_some() || extension.is_some() {
+        return Err(AppError::InvalidInput(
+            "Bulk rename requires a rename template via the new_name argument".into(),
+        ));
+    } else {
+        return Err(AppError::InvalidInput(
+            "Provide a new name, or use --pattern/--extension with a rename template".into(),
+        ));
+    }
+
     Ok(())
 }
 
@@ -217,7 +245,9 @@ pub fn cli_handler(cmd: Command, settings: &Settings) -> Result<(), AppError> {
         Command::Move { src, dest, recursive } => handle_move(&src, &dest, recursive, settings),
         Command::Copy { src, dest, recursive } => handle_copy(&src, &dest, recursive, settings),
         Command::Compress { src, dest, method } => handle_compress(&src, &dest, method, settings),
-        Command::Rename { name, new_name } => handle_rename(&name, &new_name, settings),
+        Command::Rename { name, new_name, pattern, extension, recursive } => {
+            handle_rename(&name, new_name.as_deref(), pattern.as_deref(), extension.as_deref(), recursive, settings)
+        }
         Command::Batch { file } => handle_batch(&file, settings),
         Command::EmptyTrash => handle_empty_trash(settings),
         Command::ListTrash => handle_list_trash(settings),
