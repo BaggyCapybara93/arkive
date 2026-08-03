@@ -1,12 +1,14 @@
 use std::fs;
 use std::path::Path;
 
+use indicatif::ProgressBar;
+
 use crate::file_module::error::FileManagerError;
 use crate::file_module::manager::FileManager;
 use crate::file_validation::handlers::{ensure_not_nested, valid_directory, validate_hash};
 
 /// Recursively copy a directory and its contents to the destination.
-pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), FileManagerError> {
+pub fn copy_dir_recursive(src: &Path, dst: &Path, progress: Option<&ProgressBar>) -> Result<(), FileManagerError> {
     if src.is_dir() {
         valid_directory(src)?;
     }
@@ -24,19 +26,32 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), FileManagerError
         fs::create_dir_all(dst)?;
     }
 
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
+    let entries: Vec<_> = fs::read_dir(src)?.collect::<Result<Vec<_>, _>>()?;
+    let total_entries = entries.len();
+    if let Some(bar) = progress {
+        bar.set_length(total_entries.max(1) as u64);
+        bar.set_position(0);
+    }
+
+    for (index, entry) in entries.into_iter().enumerate() {
         let file_type = entry.file_type()?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
 
         if file_type.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
+            copy_dir_recursive(&src_path, &dst_path, progress)?;
         } else {
             if let Some(parent) = dst_path.parent() {
                 fs::create_dir_all(parent)?;
             }
             fs::copy(&src_path, &dst_path)?;
+        }
+
+        if let Some(bar) = progress {
+            bar.inc(1);
+            if index + 1 == total_entries {
+                bar.finish_with_message("Copy complete");
+            }
         }
     }
 
@@ -68,7 +83,11 @@ impl<'a> FileManager<'a> {
             }
 
             let dest_dir = Self::canonical_destination_file(src, dst)?;
-            copy_dir_recursive(src, &dest_dir)?;
+            let progress = Some(FileManager::create_progress_bar(1, "Copying directory"));
+            copy_dir_recursive(src, &dest_dir, progress.as_ref())?;
+            if let Some(bar) = progress {
+                bar.finish_with_message("Directory copy complete");
+            }
 
             if self.settings.enable_metadata {
                 let manager = self.metadata_manager_for_destination(&dest_dir)?;

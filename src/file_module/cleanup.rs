@@ -45,8 +45,13 @@ impl<'a> FileManager<'a> {
         
         let now = SystemTime::now();
         let thirty_days = 30 * 24 * 60 * 60;
+        let progress = Some(FileManager::create_spinner("Scanning for unused files"));
         
-        Self::scan_directory_recursive(&src.to_path_buf(), now, thirty_days, self)?;
+        Self::scan_directory_recursive(&src.to_path_buf(), now, thirty_days, self, progress.as_ref())?;
+
+        if let Some(bar) = progress {
+            bar.finish_with_message("Scan complete");
+        }
         
         if self.settings.verbose {
             println!("Scan complete");
@@ -72,15 +77,19 @@ impl<'a> FileManager<'a> {
         Ok(())
     }
         
-    fn scan_directory_recursive(dir: &PathBuf, now: SystemTime, thirty_days: u64, settings: &FileManager<'_>) -> Result<(), FileManagerError> {
-        for entry in fs::read_dir(dir)? {
-            let entry = entry?;
+    fn scan_directory_recursive(dir: &PathBuf, now: SystemTime, thirty_days: u64, settings: &FileManager<'_>, progress: Option<&indicatif::ProgressBar>) -> Result<(), FileManagerError> {
+        let entries: Vec<_> = fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
+        for entry in entries {
             let path = entry.path();
-                
+            
             Self::scan_file(&path, now, thirty_days, settings)?;
                 
             if path.is_dir() {
-                Self::scan_directory_recursive(&path, now, thirty_days, settings)?;
+                Self::scan_directory_recursive(&path, now, thirty_days, settings, progress)?;
+            }
+
+            if let Some(bar) = progress {
+                bar.inc(1);
             }
         }
         Ok(())
@@ -98,8 +107,13 @@ impl<'a> FileManager<'a> {
         
         let mut empty_count = 0;
         let mut empty_dirs: Vec<PathBuf> = Vec::new();
+        let progress = Some(FileManager::create_spinner("Scanning for empty directories"));
         
-        Self::find_empty_dirs_recursive(&src.to_path_buf(), &mut empty_dirs)?;
+        Self::find_empty_dirs_recursive(&src.to_path_buf(), &mut empty_dirs, progress.as_ref())?;
+
+        if let Some(bar) = progress {
+            bar.finish_with_message("Empty directory scan complete");
+        }
         
         // Remove empty directories (in reverse order to handle nested)
         for dir_path in empty_dirs.into_iter().rev() {
@@ -118,7 +132,7 @@ impl<'a> FileManager<'a> {
         Ok(())
     }
 
-    fn find_empty_dirs_recursive(path: &PathBuf, empty_dirs: &mut Vec<PathBuf>) -> Result<(), FileManagerError> {
+    fn find_empty_dirs_recursive(path: &PathBuf, empty_dirs: &mut Vec<PathBuf>, progress: Option<&indicatif::ProgressBar>) -> Result<(), FileManagerError> {
         match fs::read_dir(path) {
             Ok(entries) => {
                 for entry in entries {
@@ -126,7 +140,7 @@ impl<'a> FileManager<'a> {
                     let entry_path = entry.path();
                         
                     if entry_path.is_dir() {
-                        Self::find_empty_dirs_recursive(&entry_path, empty_dirs)?;
+                        Self::find_empty_dirs_recursive(&entry_path, empty_dirs, progress)?;
                             
                         // Check if directory is empty after children processed
                         match fs::read_dir(&entry_path) {
@@ -137,6 +151,10 @@ impl<'a> FileManager<'a> {
                             }
                             Err(_) => {}
                         }
+                    }
+
+                    if let Some(bar) = progress {
+                        bar.inc(1);
                     }
                 }
                 Ok(())

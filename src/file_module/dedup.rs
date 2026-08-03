@@ -21,9 +21,10 @@ impl<'a> FileManager<'a> {
         }
 
         let mut seen: HashMap<String, String> = HashMap::new();
+        let entries: Vec<_> = fs::read_dir(src)?.collect::<Result<Vec<_>, _>>()?;
+        let progress = FileManager::maybe_create_progress_bar(entries.len().max(1) as u64, "Scanning for duplicates");
 
-        for entry in fs::read_dir(src)? {
-            let entry = entry?;
+        for entry in entries {
             let path = entry.path();
 
             if path.is_file() {
@@ -43,6 +44,14 @@ impl<'a> FileManager<'a> {
                     seen.insert(hash, path_str.to_string());
                 }
             }
+
+            if let Some(bar) = &progress {
+                bar.inc(1);
+            }
+        }
+
+        if let Some(bar) = progress {
+            bar.finish_with_message("Duplicate scan complete");
         }
 
         Ok(())

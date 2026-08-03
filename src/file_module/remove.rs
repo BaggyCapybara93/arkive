@@ -25,6 +25,11 @@ impl<'a> FileManager<'a> {
         }
         
         let files_to_remove = Self::find_files_to_remove(src, pattern, extension)?;
+        let progress = if !files_to_remove.is_empty() {
+            FileManager::maybe_create_progress_bar(files_to_remove.len().max(1) as u64, "Removing matching files")
+        } else {
+            None
+        };
         
         if files_to_remove.is_empty() {
             if options.verbose {
@@ -51,6 +56,10 @@ impl<'a> FileManager<'a> {
                 println!("Removing: {:?}", file_path);
             }
             
+            if let Some(bar) = &progress {
+                bar.inc(1);
+            }
+            
             if options.trash {
                 let trash_path = self.get_trash_path(file_path);
                 let target_path = Self::ensure_unique_trash_path(&trash_path)?;
@@ -59,6 +68,10 @@ impl<'a> FileManager<'a> {
                 // Permanently delete
                 fs::remove_file(file_path)?;
             }
+        }
+        
+        if let Some(bar) = progress {
+            bar.finish_with_message(format!("Removed {} file(s)", files_to_remove.len()));
         }
         
         if options.verbose {

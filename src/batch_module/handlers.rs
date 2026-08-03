@@ -54,6 +54,18 @@ impl BatchHandler {
 
     pub fn run(&self) -> Result<(), BatchError> {
         let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        let progress = if !self.commands.is_empty() {
+            Some(indicatif::ProgressBar::new(self.commands.len() as u64))
+        } else {
+            None
+        };
+
+        if let Some(bar) = progress.as_ref() {
+            bar.set_draw_target(indicatif::ProgressDrawTarget::stderr());
+            bar.enable_steady_tick(std::time::Duration::from_millis(120));
+            bar.set_message("Running batch jobs");
+            bar.set_style(indicatif::ProgressStyle::with_template("{msg} [{bar:40.cyan/blue}] {pos}/{len}").unwrap().progress_chars("=>-"));
+        }
 
         // Use half of the available threads to prevent overwhelming the system
         let max_threads = std::cmp::max(1, threads / 2);
@@ -67,7 +79,14 @@ impl BatchHandler {
         for job in &self.commands {
             println!("Running job: {:?} -> {:?}", job.work_type, job.destination);
             pool.add_job(job.clone())?;
+            if let Some(bar) = progress.as_ref() {
+                bar.inc(1);
+            }
         }
-        pool.join()
+        let result = pool.join();
+        if let Some(bar) = progress {
+            bar.finish_with_message("Batch complete");
+        }
+        result
     }
 }
