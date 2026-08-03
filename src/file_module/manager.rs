@@ -3,10 +3,11 @@ use std::path::PathBuf;
 
 use crate::settings::Settings;
 
+static GLOBAL_FILE_OPERATION_LOCK: Mutex<()> = Mutex::new(());
+
 pub struct FileManager<'a> {
     pub file_path: PathBuf,
     pub file_dest: PathBuf,
-    lock: Mutex<()>,
     pub settings: &'a Settings,
 }
 
@@ -15,14 +16,14 @@ impl<'a> FileManager<'a> {
         FileManager { 
             file_path: file_path.into(), 
             file_dest: file_dest.into(),
-            lock: Mutex::new(()),
             settings,
         }
     }
 
-    /// Acquires an exclusive lock on the FileManager.
-    /// Call this method before performing operations that require mutual exclusion.
-    pub fn acquire_lock(&self) -> parking_lot::MutexGuard<'_, ()> {
-        self.lock.lock()
+    /// Acquires an exclusive lock for file operations.
+    /// This is shared across all FileManager instances so concurrent operations
+    /// targeting the same paths cannot race.
+    pub fn acquire_lock(&self) -> parking_lot::MutexGuard<'static, ()> {
+        GLOBAL_FILE_OPERATION_LOCK.lock()
     }
 }
