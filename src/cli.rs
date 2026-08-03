@@ -204,12 +204,12 @@ fn handle_remove(path: &Path, pattern: &str, extension: Option<&str>, trash: boo
 }
 
 fn handle_empty_trash(settings: &Settings) -> Result<(), AppError> {
-    trash::empty_trash(settings)?;
+    FileManager::empty_trash(settings)?;
     Ok(())
 }
 
 fn handle_list_trash(settings: &Settings) -> Result<(), AppError> {
-    trash::list_trash(settings)?;
+    FileManager::list_trash(settings)?;
     Ok(())
 }
 

@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 
 use crate::file_module::error::FileManagerError;
-use crate::file_module::trash;
 use crate::file_module::FileManager;
 
 impl<'a> FileManager<'a> {
@@ -16,7 +15,7 @@ impl<'a> FileManager<'a> {
     /// - scan_empty_dirs: Scan for and remove empty directories
     pub fn cleanup(&self, options: CleanupOptions) -> Result<(), FileManagerError> {
         if options.empty_trash {
-            self.empty_trash()?;
+            FileManager::empty_trash(&self.settings)?;
         }
         
         if options.deduplicate {
@@ -33,13 +32,7 @@ impl<'a> FileManager<'a> {
         
         Ok(())
     }
-    
-    /// Empty the arkive trash directory (delegates to trash module)
-    fn empty_trash(&self) -> Result<(), FileManagerError> {
-        trash::empty_trash(self.settings)?;
-        Ok(())
-    }
-    
+
     /// Scan for unused files (files that haven't been accessed recently)
     fn scan_unused_files(&self) -> Result<(), FileManagerError> {
         let src = self.file_path.as_path();

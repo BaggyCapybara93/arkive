@@ -6,7 +6,6 @@ use crate::file_validation::handlers::{
     sanitize_file_name,
 };
 use crate::file_module::error::FileManagerError;
-
 use super::manager::FileManager;
 
 impl<'a> FileManager<'a> {
@@ -107,7 +106,7 @@ impl<'a> FileManager<'a> {
 
         // Trash handling
         if to_trash && self.settings.enable_trash {
-            let trash = super::trash::trash_dir()?;
+            let trash = FileManager::trash_dir()?;
 
             let file_name = src_path.file_name()
                 .ok_or_else(|| FileManagerError::InvalidInput("Invalid file name".into()))?;

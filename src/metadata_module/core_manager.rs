@@ -33,11 +33,6 @@ impl CoreMetadataManager {
         Ok(Self { index_path, shards_dir })
     }
 
-    #[cfg(test)]
-    pub fn with_paths(index_path: PathBuf, shards_dir: PathBuf) -> Self {
-        Self { index_path, shards_dir }
-    }
-
     pub fn canonicalize(&self, path: &Path) -> Result<PathBuf, MetadataError> {
         Ok(fs::canonicalize(path)?)
     }

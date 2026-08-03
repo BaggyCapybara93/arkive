@@ -73,24 +73,3 @@ impl MetadataManager {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use chrono::Utc;
-    use std::{
-        fs,
-        path::PathBuf,
-        time::{SystemTime, UNIX_EPOCH},
-    };
-
-    fn unique_test_dir(name: &str) -> PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("arkive-{name}-{unique}"));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).unwrap();
-        path
-    }
-}
