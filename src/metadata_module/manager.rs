@@ -23,12 +23,16 @@ impl MetadataManager {
         let shard_path = self.core.resolve_shard(&canonical);
 
         let local = LocalMetadataManager::new(shard_path.clone());
+        let previous_shard = local.load()?;
         local.upsert(Metadata {
             file_path: canonical.clone(),
             ..metadata
         })?;
 
-        self.core.update_index(canonical, shard_path)?;
+        if let Err(err) = self.core.update_index(canonical.clone(), shard_path.clone()) {
+            local.save(&previous_shard)?;
+            return Err(err);
+        }
 
         Ok(())
     }
@@ -66,5 +70,78 @@ impl MetadataManager {
         }
 
         Ok(removed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    fn unique_test_dir(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("arkive-{name}-{unique}"));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn failed_index_update_rolls_back_shard_state() {
+        let root = unique_test_dir("metadata-rollback");
+        let good_index_path = root.join("core/index.json");
+        let shards_dir = root.join("core/shards");
+
+        let initial_manager = MetadataManager {
+            core: CoreMetadataManager::with_paths(good_index_path.clone(), shards_dir.clone()),
+        };
+
+        let initial_path = root.join("initial.txt");
+        fs::write(&initial_path, b"initial").unwrap();
+        let initial_metadata = Metadata {
+            file_path: initial_path.clone(),
+            file_size: 1,
+            sha256: "initial".to_string(),
+            created_at: Utc::now(),
+            modified_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        initial_manager.update_metadata(initial_metadata).unwrap();
+
+        let bad_index_path = root.join("core/bad-index");
+        fs::create_dir_all(&bad_index_path).unwrap();
+
+        let failing_manager = MetadataManager {
+            core: CoreMetadataManager::with_paths(bad_index_path, shards_dir.clone()),
+        };
+
+        let updated_path = root.join("updated.txt");
+        fs::write(&updated_path, b"updated").unwrap();
+        let updated_metadata = Metadata {
+            file_path: updated_path.clone(),
+            file_size: 2,
+            sha256: "updated".to_string(),
+            created_at: Utc::now(),
+            modified_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        let err = failing_manager.update_metadata(updated_metadata).unwrap_err();
+        assert!(err.to_string().contains("I/O") || err.to_string().contains("Failed to update index"));
+
+        let shard_path = failing_manager.core.resolve_shard(&failing_manager.core.canonicalize(&initial_path).unwrap());
+        let shard_contents = fs::read_to_string(&shard_path).unwrap();
+        assert!(shard_contents.contains("initial"));
+        assert!(!shard_contents.contains("updated"));
+
+        let _ = fs::remove_dir_all(root);
     }
 }

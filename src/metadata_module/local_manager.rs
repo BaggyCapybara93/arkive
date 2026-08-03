@@ -41,9 +41,43 @@ impl LocalMetadataManager {
             fs::create_dir_all(parent)?;
         }
 
+        if shard_data.entries.is_empty() {
+            if self.shard_path.exists() {
+                fs::remove_file(&self.shard_path)?;
+            }
+            return Ok(());
+        }
+
         let data = serde_json::to_string_pretty(shard_data)?;
-        fs::write(&self.shard_path, data)?;
+        Self::atomic_write_file(&self.shard_path, data.as_bytes())?;
         Ok(())
+    }
+
+    fn atomic_write_file(path: &Path, contents: &[u8]) -> Result<(), MetadataError> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let temp_path = Self::temp_path(path)?;
+        fs::write(&temp_path, contents)?;
+
+        match fs::rename(&temp_path, path) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                let _ = fs::remove_file(&temp_path);
+                Err(MetadataError::Io(err))
+            }
+        }
+    }
+
+    fn temp_path(path: &Path) -> Result<PathBuf, MetadataError> {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let file_name = path.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_else(|| "shard.tmp".to_string());
+        let temp_name = format!(".{file_name}.tmp.{timestamp}");
+        Ok(path.parent().unwrap_or_else(|| Path::new(".")).join(temp_name))
     }
 
     ///Operations

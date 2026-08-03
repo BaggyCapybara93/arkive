@@ -3,6 +3,7 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use crate::metadata_module::error::MetadataError;
@@ -32,6 +33,11 @@ impl CoreMetadataManager {
         Ok(Self { index_path, shards_dir })
     }
 
+    #[cfg(test)]
+    pub fn with_paths(index_path: PathBuf, shards_dir: PathBuf) -> Self {
+        Self { index_path, shards_dir }
+    }
+
     pub fn canonicalize(&self, path: &Path) -> Result<PathBuf, MetadataError> {
         Ok(fs::canonicalize(path)?)
     }
@@ -52,8 +58,35 @@ impl CoreMetadataManager {
             fs::create_dir_all(parent)?;
         }
         let content = serde_json::to_string_pretty(index)?;
-        fs::write(&self.index_path, content)?;
+        Self::atomic_write_file(&self.index_path, content.as_bytes())?;
         Ok(())
+    }
+
+    fn atomic_write_file(path: &Path, contents: &[u8]) -> Result<(), MetadataError> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let temp_path = Self::temp_path(path)?;
+        fs::write(&temp_path, contents)?;
+
+        match fs::rename(&temp_path, path) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                let _ = fs::remove_file(&temp_path);
+                Err(MetadataError::Io(err))
+            }
+        }
+    }
+
+    fn temp_path(path: &Path) -> Result<PathBuf, MetadataError> {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let file_name = path.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_else(|| "metadata.tmp".to_string());
+        let temp_name = format!(".{file_name}.tmp.{timestamp}");
+        Ok(path.parent().unwrap_or_else(|| Path::new(".")).join(temp_name))
     }
 
     //Shard Resolution
