@@ -34,7 +34,6 @@ impl BatchHandler {
 
     pub fn from_file(path: &str, settings: &Settings) -> Result<Self, BatchError> {
         let batch_content = fs::read_to_string(path)?;
-        
         // Try parsing as BatchFile first (new format with "operations" key)
         if let Ok(batch) = serde_json::from_str::<BatchFile>(&batch_content) {
             let commands = batch.operations
@@ -46,7 +45,6 @@ impl BatchHandler {
                 .collect();
             return Ok(BatchHandler { commands });
         }
-        
         // Fall back to plain Vec<Job> (old format)
         let commands: Vec<Job> = serde_json::from_str(&batch_content)?;
         Ok(BatchHandler::new(commands, settings))
@@ -62,9 +60,14 @@ impl BatchHandler {
 
         if let Some(bar) = progress.as_ref() {
             bar.set_draw_target(indicatif::ProgressDrawTarget::stderr());
-            bar.enable_steady_tick(std::time::Duration::from_millis(120));
             bar.set_message("Running batch jobs");
-            bar.set_style(indicatif::ProgressStyle::with_template("{msg} [{bar:40.cyan/blue}] {pos}/{len}").unwrap().progress_chars("=>-"));
+            bar.set_style(
+                indicatif::ProgressStyle::with_template(
+                    "{msg} [{bar:40.cyan/blue}] {pos}/{len}"
+                )
+                .unwrap()
+                .progress_chars("=>-"),
+            );
         }
 
         // Use half of the available threads to prevent overwhelming the system
@@ -79,14 +82,17 @@ impl BatchHandler {
         for job in &self.commands {
             println!("Running job: {:?} -> {:?}", job.work_type, job.destination);
             pool.add_job(job.clone())?;
-            if let Some(bar) = progress.as_ref() {
-                bar.inc(1);
-            }
         }
+
+        // Wait for all jobs to complete
         let result = pool.join();
+
+        // Update progress bar to 100% after all jobs complete
         if let Some(bar) = progress {
+            bar.set_position(self.commands.len() as u64);
             bar.finish_with_message("Batch complete");
         }
+
         result
     }
 }
