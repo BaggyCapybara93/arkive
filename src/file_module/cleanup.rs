@@ -46,21 +46,34 @@ impl<'a> FileManager<'a> {
         let now = SystemTime::now();
         let thirty_days = 30 * 24 * 60 * 60;
         let progress = Some(FileManager::create_spinner("Scanning for unused files"));
-        
-        Self::scan_directory_recursive(&src.to_path_buf(), now, thirty_days, self, progress.as_ref())?;
+
+        // Collect matches instead of just printing them, so the scan
+        // actually reports something usable when it's done.
+        let mut unused_files: Vec<PathBuf> = Vec::new();
+
+        Self::scan_directory_recursive(&src.to_path_buf(), now, thirty_days, self, progress.as_ref(), &mut unused_files)?;
 
         if let Some(bar) = progress {
-            bar.finish_with_message("Scan complete");
+            bar.finish_with_message(format!("Scan complete: {} unused file(s) found", unused_files.len()));
         }
         
         if self.settings.verbose {
-            println!("Scan complete");
+            println!("Scan complete: {} unused file(s) found", unused_files.len());
+            for path in &unused_files {
+                println!("  Unused (not accessed in 30+ days): {:?}", path);
+            }
         }
         
         Ok(())
     }
 
-    fn scan_file(path: &PathBuf, now: SystemTime, thirty_days: u64, settings: &FileManager<'_>) -> Result<(), FileManagerError> {
+    fn scan_file(
+        path: &PathBuf,
+        now: SystemTime,
+        thirty_days: u64,
+        settings: &FileManager<'_>,
+        unused_files: &mut Vec<PathBuf>,
+    ) -> Result<(), FileManagerError> {
         if let Ok(metadata) = fs::metadata(path) {
             if let Ok(accessed) = metadata.accessed() {
                 let elapsed = now.duration_since(accessed).map_err(|e| FileManagerError::InvalidInput(e.to_string()))?;
@@ -70,22 +83,30 @@ impl<'a> FileManager<'a> {
                     if settings.settings.verbose {
                         println!("Found unused file (not accessed in 30+ days): {:?}", path);
                     }
-                    return Ok(());
+                    // Actually record the match instead of discarding it.
+                    unused_files.push(path.clone());
                 }
             }
         }
         Ok(())
     }
         
-    fn scan_directory_recursive(dir: &PathBuf, now: SystemTime, thirty_days: u64, settings: &FileManager<'_>, progress: Option<&indicatif::ProgressBar>) -> Result<(), FileManagerError> {
+    fn scan_directory_recursive(
+        dir: &PathBuf,
+        now: SystemTime,
+        thirty_days: u64,
+        settings: &FileManager<'_>,
+        progress: Option<&indicatif::ProgressBar>,
+        unused_files: &mut Vec<PathBuf>,
+    ) -> Result<(), FileManagerError> {
         let entries: Vec<_> = fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
         for entry in entries {
             let path = entry.path();
             
-            Self::scan_file(&path, now, thirty_days, settings)?;
+            Self::scan_file(&path, now, thirty_days, settings, unused_files)?;
                 
             if path.is_dir() {
-                Self::scan_directory_recursive(&path, now, thirty_days, settings, progress)?;
+                Self::scan_directory_recursive(&path, now, thirty_days, settings, progress, unused_files)?;
             }
 
             if let Some(bar) = progress {
@@ -142,11 +163,21 @@ impl<'a> FileManager<'a> {
                     if entry_path.is_dir() {
                         Self::find_empty_dirs_recursive(&entry_path, empty_dirs, progress)?;
                             
-                        // Check if directory is empty after children processed
+                        // Check if directory is empty after children processed.
+                        // A subdirectory that was JUST found empty is still on
+                        // disk at this point (actual deletion happens later, in
+                        // scan_and_remove_empty_dirs), so a plain count would
+                        // wrongly see it as "not empty" and this parent would
+                        // never be flagged. Exclude anything already queued
+                        // for removal from the count.
                         match fs::read_dir(&entry_path) {
-                            Ok(entries) => {
-                                if entries.count() == 0 {
-                                     empty_dirs.push(entry_path.clone());
+                            Ok(sub_entries) => {
+                                let remaining = sub_entries
+                                    .filter_map(|e| e.ok())
+                                    .filter(|e| !empty_dirs.contains(&e.path()))
+                                    .count();
+                                if remaining == 0 {
+                                    empty_dirs.push(entry_path.clone());
                                 }
                             }
                             Err(_) => {}

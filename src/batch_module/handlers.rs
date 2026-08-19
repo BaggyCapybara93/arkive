@@ -8,6 +8,7 @@ use crate::batch_module::job::BatchCompressionMethod;
 use crate::batch_module::thread_pool::ThreadPool;
 use crate::batch_module::file::BatchFile;
 
+use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 
 impl From<BatchCompressionMethod> for crate::file_module::compress::CompressionMethod {
     fn from(batch_method: BatchCompressionMethod) -> Self {
@@ -52,32 +53,38 @@ impl BatchHandler {
 
     pub fn run(&self) -> Result<(), BatchError> {
         let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-        let progress = if !self.commands.is_empty() {
-            Some(indicatif::ProgressBar::new(self.commands.len() as u64))
-        } else {
-            None
-        };
 
-        if let Some(bar) = progress.as_ref() {
-            bar.set_draw_target(indicatif::ProgressDrawTarget::stderr());
+        // MultiProgress coordinates the draw target so multiple bars (this one,
+        // plus any per-file bar elsewhere in the pipeline) render as stacked
+        // lines instead of overwriting each other.
+        let multi = MultiProgress::new();
+
+        let progress = if !self.commands.is_empty() {
+            let bar = multi.add(ProgressBar::new(self.commands.len() as u64));
+            bar.set_draw_target(ProgressDrawTarget::stderr());
             bar.set_message("Running batch jobs");
             bar.set_style(
-                indicatif::ProgressStyle::with_template(
+                ProgressStyle::with_template(
                     "{msg} [{bar:40.cyan/blue}] {pos}/{len}"
                 )
                 .unwrap()
                 .progress_chars("=>-"),
             );
-        }
+            Some(bar)
+        } else {
+            None
+        };
 
         // Use half of the available threads to prevent overwhelming the system
         let max_threads = std::cmp::max(1, threads / 2);
 
-        //Prevent adding more threads than jobs in batch file
+        // Prevent adding more threads than jobs in batch file
         let job_count = self.commands.len();
         let worker_count = std::cmp::min(max_threads, job_count.max(1));
 
-        let pool = ThreadPool::new(worker_count);
+        // Hand a clone of the bar to the pool; each worker thread will clone it
+        // again internally so it can call .inc(1) when its own job finishes.
+        let pool = ThreadPool::new(worker_count, progress.clone());
 
         for job in &self.commands {
             println!("Running job: {:?} -> {:?}", job.work_type, job.destination);
@@ -87,9 +94,7 @@ impl BatchHandler {
         // Wait for all jobs to complete
         let result = pool.join();
 
-        // Update progress bar to 100% after all jobs complete
         if let Some(bar) = progress {
-            bar.set_position(self.commands.len() as u64);
             bar.finish_with_message("Batch complete");
         }
 

@@ -56,10 +56,6 @@ impl<'a> FileManager<'a> {
                 println!("Removing: {:?}", file_path);
             }
             
-            if let Some(bar) = &progress {
-                bar.inc(1);
-            }
-            
             if options.trash {
                 let trash_path = self.get_trash_path(file_path);
                 let target_path = Self::ensure_unique_trash_path(&trash_path)?;
@@ -67,6 +63,11 @@ impl<'a> FileManager<'a> {
             } else {
                 // Permanently delete
                 fs::remove_file(file_path)?;
+            }
+
+
+            if let Some(bar) = &progress {
+                bar.inc(1);
             }
         }
         
@@ -96,10 +97,8 @@ impl<'a> FileManager<'a> {
                 let file_name_str = file_name.to_string_lossy();
                 
                 let should_remove = if let Some(ext) = extension {
-                    // Check if file has the specified extension
                     file_name_str.ends_with(ext)
                 } else {
-                    // Check if file name matches the pattern
                     Self::matches_pattern(&file_name_str, pattern)
                 };
                 
@@ -116,24 +115,18 @@ impl<'a> FileManager<'a> {
         Ok(files)
     }
     
-    /// Check if a file name matches a glob pattern
     fn matches_pattern(file_name: &str, pattern: &str) -> bool {
         Self::match_glob(file_name, pattern)
     }
     
-    /// Match a file name against a glob pattern
     fn match_glob(file_name: &str, pattern: &str) -> bool {
-        // Convert glob pattern to regex
         let regex_pattern = Self::glob_to_regex(pattern);
-        
-        // Use regex crate for pattern matching
         match regex::Regex::new(&regex_pattern) {
             Ok(regex) => regex.is_match(file_name),
             Err(_) => false,
         }
     }
     
-    /// Convert a glob pattern to a regex pattern
     fn glob_to_regex(pattern: &str) -> String {
         let mut regex = String::new();
         
@@ -159,7 +152,6 @@ impl<'a> FileManager<'a> {
         regex
     }
     
-    /// Get the trash path for a file
     fn get_trash_path(&self, file_path: &Path) -> PathBuf {
         let src = self.file_path.as_path();
         let relative_path = file_path.strip_prefix(src).unwrap_or(file_path);

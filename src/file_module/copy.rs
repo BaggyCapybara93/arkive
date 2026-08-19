@@ -8,6 +8,20 @@ use crate::file_module::manager::FileManager;
 use crate::file_module::add_timestamp_to_path;
 use crate::file_validation::handlers::{ensure_not_nested, valid_directory, validate_hash};
 
+/// Count every file and directory entry in a tree, so we can set an accurate
+/// total on the progress bar ONCE before copying starts.
+fn count_entries(src: &Path) -> Result<u64, FileManagerError> {
+    let mut count = 0u64;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        count += 1; // count this entry itself (file or dir)
+        if entry.file_type()?.is_dir() {
+            count += count_entries(&entry.path())?;
+        }
+    }
+    Ok(count)
+}
+
 /// Recursively copy a directory and its contents to the destination.
 pub fn copy_dir_recursive(src: &Path, dst: &Path, progress: Option<&ProgressBar>) -> Result<(), FileManagerError> {
     if src.is_dir() {
@@ -28,13 +42,8 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path, progress: Option<&ProgressBar>
     }
 
     let entries: Vec<_> = fs::read_dir(src)?.collect::<Result<Vec<_>, _>>()?;
-    let total_entries = entries.len();
-    if let Some(bar) = progress {
-        bar.set_length(total_entries.max(1) as u64);
-        bar.set_position(0);
-    }
 
-    for (index, entry) in entries.into_iter().enumerate() {
+    for entry in entries.into_iter() {
         let file_type = entry.file_type()?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
@@ -50,9 +59,6 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path, progress: Option<&ProgressBar>
 
         if let Some(bar) = progress {
             bar.inc(1);
-            if index + 1 == total_entries {
-                bar.finish_with_message("Copy complete");
-            }
         }
     }
 
@@ -91,8 +97,19 @@ impl<'a> FileManager<'a> {
             };
 
             let dest_dir = Self::canonical_destination_file(&src, &final_dst)?;
-            let progress = Some(FileManager::create_progress_bar(1, "Copying directory"));
+
+            // Count the ENTIRE tree once, up front, so the bar's total is
+            // accurate for the whole operation, not just the top-level folder.
+            let total_entries = count_entries(src)?;
+            let progress = Some(FileManager::create_progress_bar(
+                total_entries.max(1),
+                "Copying directory",
+            ));
+
             copy_dir_recursive(src, &dest_dir, progress.as_ref())?;
+
+            // Only finish the bar here, once, after the ENTIRE recursive copy
+            // has actually completed.
             if let Some(bar) = progress {
                 bar.finish_with_message("Directory copy complete");
             }

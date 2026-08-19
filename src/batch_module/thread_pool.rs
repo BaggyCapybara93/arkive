@@ -4,6 +4,7 @@ use std::{
     thread,
 };
 use crate::batch_module::{Job, BatchError};
+use indicatif::ProgressBar;
 
 pub enum ThreadMessage {
     Job(Job),
@@ -26,7 +27,11 @@ pub struct ThreadPool {
 }
 
 impl ThreadPool {
-    pub fn new(size: usize) -> Self {
+    /// `progress` is the shared batch-level bar (or None if there are no jobs).
+    /// It's captured once here and cloned into every worker thread, so each
+    /// worker can call `.inc(1)` on the SAME underlying bar the instant its
+    /// own job finishes.
+    pub fn new(size: usize, progress: Option<ProgressBar>) -> Self {
         let (sender, receiver) = mpsc::channel::<ThreadMessage>();
         let (result_sender, result_receiver) = mpsc::channel::<ThreadResult>();
         let receiver = Arc::new(Mutex::new(receiver));
@@ -36,6 +41,9 @@ impl ThreadPool {
         for id in 0..size {
             let receiver = Arc::clone(&receiver);
             let result_sender = result_sender.clone();
+            // ProgressBar is internally Arc-backed, so this clone is cheap and
+            // all workers end up incrementing the same visible bar.
+            let progress = progress.clone();
 
             let handle = thread::spawn(move || {
                 loop {
@@ -49,7 +57,7 @@ impl ThreadPool {
 
                     match message {
                         Ok(ThreadMessage::Job(job)) => {
-                            match job.execute() {
+                            match job.execute(progress.as_ref()) {
                                 Ok(_) => {
                                     let _ = result_sender.send(ThreadResult::Ok);
                                 }
