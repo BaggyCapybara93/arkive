@@ -81,14 +81,17 @@ pub fn validate_access_permissions(path: &Path) -> Result<(), FileManagerError> 
         }
     }
 
-    // Check delete permission
-    //if let Some(parent) = canon.parent() {
-    //    if OpenOptions::new().write(true).open(parent).is_err() {
-    //        return Err(FileManagerError::PermissionDenied(format!(
-    //            "Cannot delete {:?} (parent not writable)", canon
-    //        )));
-    //    }
-    //}
+    // Check delete permission (only for files, not directories)
+    // This check ensures the parent directory is writable so we can delete the file
+    if meta.is_file() {
+        if let Some(parent) = canon.parent() {
+            if OpenOptions::new().write(true).open(parent).is_err() {
+                return Err(FileManagerError::PermissionDenied(format!(
+                    "Cannot delete {:?} (parent not writable)", canon
+                )));
+            }
+        }
+    }
 
     Ok(())
 }
