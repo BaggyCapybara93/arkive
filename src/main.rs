@@ -28,6 +28,7 @@ fn main() -> Result<(), AppError> {
         recursive: config.recursive,
         enable_metadata: config.enable_metadata,
         compression_method: config.compression_method,
+        use_timestamp: config.use_timestamp,
     };
 
     cli_handler(cli.command, &settings)?;

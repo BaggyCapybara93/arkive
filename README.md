@@ -7,7 +7,7 @@ A simple file management utility written in Rust. Primarily made for myself to l
 - **Move files and directories**: Relocate files with optional recursive directory support
 - **Copy files and directories**: Duplicate files with integrity verification using SHA-256 hashing
 - **Delete files and directories**: Remove files with optional recursive directory deletion and trash support
-- **Compress files and directories**: Create tar.gz archives
+- **Compress files and directories**: Create tar.gz archives with optional timestamp prefix
 - **Batch operations**: Execute multiple file operations from a JSON configuration file
 - **Trash management**: Soft-delete files to arkive_trash directory with list and empty commands
 - **Deduplication**: Scan directories for duplicate files (same hash) and remove them
@@ -61,6 +61,7 @@ Copy a file or directory to a new location with integrity verification.
 
 **Options:**
 - `--recursive`: Copy directories recursively (required for directories)
+- `--timestamp`: Add timestamp prefix to destination filename (e.g., `20260819_143022_file1.txt`)
 
 **Examples:**
 ```bash
@@ -69,22 +70,32 @@ arkive copy file1.txt backup/
 
 # Copy a directory recursively
 arkive copy myproject/ backup/myproject/ --recursive
+
+# Copy with timestamp prefix
+arkive copy file1.txt backup/ --timestamp
 ```
 
 ### Compress Files
 ```bash
-arkive compress <source> <destination>
+arkive compress <source> <destination> [OPTIONS]
 ```
 
 Compress a file or directory into a tar.gz archive.
 
+**Options:**
+- `--timestamp`: Add timestamp prefix to destination filename (e.g., `20260819_143022_file1.txt.tar.gz`)
+
 **Examples:**
 ```bash
 # Compress a single file
-arkive compress file1.txt backup/file1.txt.gz
+arkive compress file1.txt backup/file1.txt.tar.gz
 
 # Compress a directory
 arkive compress myproject/ backup/myproject.tar.gz
+
+# Compress with timestamp prefix
+arkive compress file1.txt backup/ --timestamp
+```
 
 ### Rename Files
 ```bash

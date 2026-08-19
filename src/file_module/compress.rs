@@ -8,6 +8,7 @@ use crate::file_validation::handlers::{
     valid_directory, validate_compress_path
 };
 use crate::file_module::error::FileManagerError;
+use crate::file_module::add_timestamp_to_path;
 
 use super::manager::FileManager;
 
@@ -51,7 +52,7 @@ fn create_encoder(method: &CompressionMethod, file: fs::File) -> Result<Box<dyn 
 
 impl<'a> FileManager<'a> {
     /// Compress a file or directory into a tar.gz archive.
-    pub fn compress_path(&self, method: CompressionMethod) -> Result<(), FileManagerError> {
+    pub fn compress_path(&self, method: CompressionMethod, add_timestamp: bool) -> Result<(), FileManagerError> {
         let _guard = self.acquire_lock();
         let src = self.file_path.as_path();
         let dst = self.file_dest.as_path();
@@ -63,7 +64,14 @@ impl<'a> FileManager<'a> {
             valid_directory(src)?;
         }
         
-        let file = fs::File::create(dst)?;
+        // Add timestamp to destination if requested
+        let final_dst = if add_timestamp {
+            add_timestamp_to_path(dst)?
+        } else {
+            dst.to_path_buf()
+        };
+
+        let file = fs::File::create(&final_dst)?;
         let encoder = create_encoder(&method, file)?;
         let mut tar = tar::Builder::new(encoder);
 

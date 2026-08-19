@@ -150,7 +150,7 @@ pub enum Command {
 fn handle_move(src: &Path, dest: &Path, recursive: bool, settings: &Settings) ->  Result<(), AppError> {
     let fm = FileManager::new(src, dest, settings);
     if recursive {
-        fm.copy_path(true)?;
+        fm.copy_path(true, settings.use_timestamp)?;
         fm.delete_path(src, true, false)?;
     } else {
         fm.move_path()?;
@@ -161,9 +161,9 @@ fn handle_move(src: &Path, dest: &Path, recursive: bool, settings: &Settings) ->
 fn handle_copy(src: &Path, dest: &Path, recursive: bool, settings: &Settings) -> Result<(), AppError> {
     let fm = FileManager::new(src, dest, settings);
     if recursive {
-        fm.copy_path(true)?;
+        fm.copy_path(true, settings.use_timestamp)?;
     } else {
-        fm.copy_path(false)?;
+        fm.copy_path(false, settings.use_timestamp)?;
     }
     Ok(())
 }
@@ -171,7 +171,7 @@ fn handle_copy(src: &Path, dest: &Path, recursive: bool, settings: &Settings) ->
 fn handle_compress(src: &Path, dest: &Path, method: Option<CompressionMethod>, settings: &Settings) -> Result<(), AppError> {
     let fm = FileManager::new(src, dest, settings);
     let compression_method = method.unwrap_or(settings.compression_method);
-    fm.compress_path(compression_method)?;
+    fm.compress_path(compression_method, settings.use_timestamp)?;
     Ok(())
 }
 

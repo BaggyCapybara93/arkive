@@ -28,6 +28,7 @@ pub struct Job {
     pub recursive: Option<bool>,
     pub cleanup: Option<bool>, //Cleanup after operation, can cause decrease in performance if set to true 
     pub compression_method: Option<BatchCompressionMethod>,
+    pub timestamp: Option<bool>, // Add timestamp prefix to destination filename
     #[serde(skip)]
     pub settings: Option<Arc<Settings>>,
 }
@@ -47,7 +48,8 @@ impl Job {
         match self.work_type {
             WorkType::Move => {
                 if recursive {
-                    fm.copy_path(true)?;
+                    let add_timestamp = self.timestamp.unwrap_or(settings.use_timestamp);
+                    fm.copy_path(true, add_timestamp)?;
                     // Only delete source if copy succeeded (destination exists)
                     if fm.file_dest.exists() {
                         fm.delete_path(self.source.clone(), true, false)?;
@@ -62,14 +64,18 @@ impl Job {
                     fm.move_path()?;
                 }
             }
-            WorkType::Copy => fm.copy_path(recursive)?,
+            WorkType::Copy => {
+                let add_timestamp = self.timestamp.unwrap_or(settings.use_timestamp);
+                fm.copy_path(recursive, add_timestamp)?;
+            }
             WorkType::Compress => {
                 let compression_method = self.compression_method
                     .as_ref()
                     .map(|m| m.clone().into())
                     .or_else(|| self.settings.as_ref().map(|s| s.compression_method));
                 let method = compression_method.unwrap_or(settings.compression_method);
-                fm.compress_path(method)?;
+                let add_timestamp = self.timestamp.unwrap_or(settings.use_timestamp);
+                fm.compress_path(method, add_timestamp)?;
             }
             WorkType::Rename => fm.rename_path()?,
         }

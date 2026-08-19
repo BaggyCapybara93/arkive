@@ -31,6 +31,10 @@ pub struct Config {
     #[serde(default = "default_gzip")]
     pub compression_method: CompressionMethod,
     
+    /// Enable timestamp prefix for copy and compression operations
+    #[serde(default)]
+    pub use_timestamp: bool,
+    
     /// Timestamp when config was created (ISO 8601 format)
     #[serde(with = "chrono::serde::ts_seconds")]
     pub created_at: DateTime<Utc>,
@@ -58,6 +62,7 @@ impl Default for Config {
             recursive: false,
             enable_metadata: false,
             compression_method: CompressionMethod::Gzip,
+            use_timestamp: false,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

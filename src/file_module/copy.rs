@@ -5,6 +5,7 @@ use indicatif::ProgressBar;
 
 use crate::file_module::error::FileManagerError;
 use crate::file_module::manager::FileManager;
+use crate::file_module::add_timestamp_to_path;
 use crate::file_validation::handlers::{ensure_not_nested, valid_directory, validate_hash};
 
 /// Recursively copy a directory and its contents to the destination.
@@ -60,7 +61,7 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path, progress: Option<&ProgressBar>
 
 impl<'a> FileManager<'a> {
     /// Copy a file or directory to the destination.
-    pub fn copy_path(&self, recursive: bool) -> Result<(), FileManagerError> {
+    pub fn copy_path(&self, recursive: bool, add_timestamp: bool) -> Result<(), FileManagerError> {
         let _guard = self.acquire_lock();
         let src = self.file_path.as_path();
         let dst = self.file_dest.as_path();
@@ -82,7 +83,14 @@ impl<'a> FileManager<'a> {
                 return Ok(());
             }
 
-            let dest_dir = Self::canonical_destination_file(src, dst)?;
+            // Add timestamp to destination if requested
+            let final_dst = if add_timestamp {
+                add_timestamp_to_path(dst)?
+            } else {
+                dst.to_path_buf()
+            };
+
+            let dest_dir = Self::canonical_destination_file(&src, &final_dst)?;
             let progress = Some(FileManager::create_progress_bar(1, "Copying directory"));
             copy_dir_recursive(src, &dest_dir, progress.as_ref())?;
             if let Some(bar) = progress {
@@ -101,7 +109,14 @@ impl<'a> FileManager<'a> {
                 return Ok(());
             }
 
-            let dest_file = Self::canonical_destination_file(src, dst)?;
+            // Add timestamp to destination if requested
+            let final_dst = if add_timestamp {
+                add_timestamp_to_path(dst)?
+            } else {
+                dst.to_path_buf()
+            };
+
+            let dest_file = Self::canonical_destination_file(&src, &final_dst)?;
 
             // Check if file already exists in metadata (skip if duplicate)
             if self.settings.enable_metadata && !self.settings.dry_run {
@@ -133,7 +148,7 @@ impl<'a> FileManager<'a> {
 
         // Verify file integrity
         if src.is_file() && !self.settings.dry_run {
-            let dest_file = Self::canonical_destination_file(src, dst)?;
+            let dest_file = Self::canonical_destination_file(&src, dst)?;
             validate_hash(src, &dest_file)?;
         }
 
