@@ -71,6 +71,16 @@ impl<'a> FileManager<'a> {
             dst.to_path_buf()
         };
 
+        if self.settings.dry_run {
+            if self.settings.verbose {
+                println!(
+                    "[DRY-RUN] Would compress {:?} to {:?} using {:?}",
+                    src, final_dst, method
+                );
+            }
+            return Ok(());
+        }
+
         let file = fs::File::create(&final_dst)?;
         let encoder = create_encoder(&method, file)?;
         let mut tar = tar::Builder::new(encoder);
