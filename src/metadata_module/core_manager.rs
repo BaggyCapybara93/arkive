@@ -5,13 +5,30 @@ use std::{
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
+use sha2::{Digest, Sha256};
 
 use crate::metadata_module::error::MetadataError;
 
 ///This manages the core metadata folder
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalIndex {
+    #[serde(default = "metadata_format_version")]
+    pub version: u8,
+    #[serde(default)]
     pub map: HashMap<PathBuf, PathBuf>,
+}
+
+fn metadata_format_version() -> u8 {
+    1
+}
+
+impl Default for GlobalIndex {
+    fn default() -> Self {
+        Self {
+            version: metadata_format_version(),
+            map: HashMap::new(),
+        }
+    }
 }
 pub struct CoreMetadataManager {
     index_path: PathBuf,
@@ -52,8 +69,8 @@ impl CoreMetadataManager {
         if let Some(parent) = self.index_path.parent(){
             fs::create_dir_all(parent)?;
         }
-        let content = serde_json::to_string_pretty(index)?;
-        Self::atomic_write_file(&self.index_path, content.as_bytes())?;
+        let content = serde_json::to_vec(index)?;
+        Self::atomic_write_file(&self.index_path, &content)?;
         Ok(())
     }
 
@@ -86,13 +103,16 @@ impl CoreMetadataManager {
 
     //Shard Resolution
     pub fn resolve_shard(&self, canonical_path: &Path) -> PathBuf {
-        let dir_name = canonical_path
+        let parent = canonical_path
             .parent()
-            .and_then(|p| p.components().next())
-            .map(|c| c.as_os_str().to_string_lossy().to_string())
-            .unwrap_or_else(|| "root".to_string());
+            .unwrap_or(canonical_path);
+        let digest = Sha256::digest(parent.to_string_lossy().as_bytes());
+        let shard_key = digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
 
-        self.shards_dir.join(format!("dir_{}.json", dir_name))
+        self.shards_dir.join(format!("dir_{shard_key}.json"))
     }
 
     pub fn lookup_shard(&self, canonical_path: &Path) -> Result<Option<PathBuf>, MetadataError> {

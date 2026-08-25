@@ -116,7 +116,7 @@ impl<'a> FileManager<'a> {
 
             if self.settings.enable_metadata {
                 let manager = self.metadata_manager_for_destination(&dest_dir)?;
-                self.save_metadata_for_directory(src, &dest_dir, &manager)?;
+                self.save_metadata_for_directory(&dest_dir, &manager)?;
             }
         } else {
             if self.settings.dry_run {

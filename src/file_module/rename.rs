@@ -18,6 +18,7 @@ impl<'a> FileManager<'a> {
             return Ok(());
         }
 
+        let source_metadata_keys = self.metadata_keys_for_path(src)?;
         let dest_path = Self::canonical_destination_file(src, dst)?;
         std::fs::rename(src, &dest_path)?;
 
@@ -27,22 +28,10 @@ impl<'a> FileManager<'a> {
             if dest_path.is_file() {
                 self.save_metadata_for_file(&dest_path, &manager)?;
             } else if dest_path.is_dir() {
-                self.save_metadata_for_directory(src, &dest_path, &manager)?;
+                self.save_metadata_for_directory(&dest_path, &manager)?;
             }
 
-            let source_paths = if self.settings.enable_metadata && src.is_dir() {
-                Some(self.collect_file_paths(src)?)
-            } else {
-                None
-            };
-
-            if let Some(paths) = source_paths {
-                for old_path in paths {
-                    self.remove_metadata_for_file(&old_path)?;
-                }
-            } else if src.is_file() {
-                self.remove_metadata_for_file(src)?;
-            }
+            self.remove_metadata_by_keys(&source_metadata_keys)?;
         }
 
         Ok(())
@@ -102,7 +91,18 @@ impl<'a> FileManager<'a> {
                 return Err(FileManagerError::InvalidInput(format!("Target already exists: {:?}", new_path)));
             }
 
+            let source_metadata_keys = self.metadata_keys_for_path(&path)?;
             fs::rename(&path, &new_path)?;
+
+            if self.settings.enable_metadata {
+                let manager = self.metadata_manager_for_destination(&new_path)?;
+                if new_path.is_file() {
+                    self.save_metadata_for_file(&new_path, &manager)?;
+                } else if new_path.is_dir() {
+                    self.save_metadata_for_directory(&new_path, &manager)?;
+                }
+                self.remove_metadata_by_keys(&source_metadata_keys)?;
+            }
 
             if self.settings.verbose {
                 println!("Renamed {:?} to {:?}", path, new_path);

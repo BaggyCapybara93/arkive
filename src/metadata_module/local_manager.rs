@@ -48,8 +48,8 @@ impl LocalMetadataManager {
             return Ok(());
         }
 
-        let data = serde_json::to_string_pretty(shard_data)?;
-        Self::atomic_write_file(&self.shard_path, data.as_bytes())?;
+        let data = serde_json::to_vec(shard_data)?;
+        Self::atomic_write_file(&self.shard_path, &data)?;
         Ok(())
     }
 

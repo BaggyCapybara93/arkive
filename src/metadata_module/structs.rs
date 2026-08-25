@@ -10,9 +10,6 @@ pub struct Metadata {
     pub sha256: String,
 
     #[serde(with = "chrono::serde::ts_seconds")]
-    pub created_at: DateTime<Utc>,
-
-    #[serde(with = "chrono::serde::ts_seconds")]
     pub modified_at: DateTime<Utc>,
 
     #[serde(with = "chrono::serde::ts_seconds")]
@@ -30,7 +27,6 @@ impl Metadata {
             file_path,
             file_size,
             sha256,
-            created_at: modified_at,
             modified_at,
             updated_at: modified_at,
         }

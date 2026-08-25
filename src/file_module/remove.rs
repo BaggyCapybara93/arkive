@@ -60,6 +60,8 @@ impl<'a> FileManager<'a> {
 
         // Remove files
         for file_path in &files_to_remove {
+            let metadata_keys = self.metadata_keys_for_path(file_path)?;
+
             if options.verbose {
                 println!("Removing: {:?}", file_path);
             }
@@ -71,6 +73,8 @@ impl<'a> FileManager<'a> {
                 // Permanently delete
                 fs::remove_file(file_path)?;
             }
+
+            self.remove_metadata_by_keys(&metadata_keys)?;
 
             if let Some(bar) = &progress {
                 bar.inc(1);

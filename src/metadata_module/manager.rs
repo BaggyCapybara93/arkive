@@ -49,8 +49,10 @@ impl MetadataManager {
         Ok(local.get(&canonical)?)
     }
 
-    pub fn remove_metadata(&self, path: &Path) -> Result<bool, MetadataError> {
-        let canonical = self.core.canonicalize(path)?;
+    /// Remove an entry by a canonical path captured before a file operation.
+    /// This also works after the file has been moved or deleted.
+    pub fn remove_metadata_by_key(&self, canonical_path: &Path) -> Result<bool, MetadataError> {
+        let canonical = canonical_path.to_path_buf();
 
         // 1. Look up shard
         let shard_path = match self.core.lookup_shard(&canonical)? {
@@ -72,4 +74,3 @@ impl MetadataManager {
         Ok(removed)
     }
 }
-

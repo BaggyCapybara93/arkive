@@ -52,13 +52,6 @@ impl<'a> FileManager<'a> {
             valid_directory(src)?;
         }
 
-        // Pre-collect old paths for metadata removal
-        let source_paths = if self.settings.enable_metadata && src.is_dir() {
-            Some(self.collect_file_paths(src)?)
-        } else {
-            None
-        };
-
         if self.settings.dry_run {
             if self.settings.verbose {
                 println!("[DRY-RUN] Would move {:?} to {:?}", src, dst);
@@ -66,6 +59,7 @@ impl<'a> FileManager<'a> {
             return Ok(());
         }
 
+        let source_metadata_keys = self.metadata_keys_for_path(src)?;
         let dest_path = Self::canonical_destination_file(src, dst)?;
         fs::rename(src, &dest_path)?;
 
@@ -75,17 +69,10 @@ impl<'a> FileManager<'a> {
             if dest_path.is_file() {
                 self.save_metadata_for_file(&dest_path, &manager)?;
             } else if dest_path.is_dir() {
-                self.save_metadata_for_directory(src, &dest_path, &manager)?;
+                self.save_metadata_for_directory(&dest_path, &manager)?;
             }
 
-            // Remove old metadata
-            if let Some(paths) = source_paths {
-                for old_path in paths {
-                    self.remove_metadata_for_file(&old_path)?;
-                }
-            } else if src.is_file() {
-                self.remove_metadata_for_file(src)?;
-            }
+            self.remove_metadata_by_keys(&source_metadata_keys)?;
         }
 
         if self.settings.verbose {
@@ -110,6 +97,12 @@ impl<'a> FileManager<'a> {
             valid_directory(src_path)?;
         }
 
+        let metadata_keys = if self.settings.dry_run {
+            Vec::new()
+        } else {
+            self.metadata_keys_for_path(src_path)?
+        };
+
         // Trash handling
         if to_trash && self.settings.enable_trash {
             src_path
@@ -130,8 +123,7 @@ impl<'a> FileManager<'a> {
                 println!("Moved {:?} to trash", src_path);
             }
 
-            // Remove metadata
-            self.remove_metadata_for_file(src_path)?;
+            self.remove_metadata_by_keys(&metadata_keys)?;
 
             return Ok(());
         }
@@ -167,8 +159,7 @@ impl<'a> FileManager<'a> {
             fs::remove_file(src_path)?;
         }
 
-        // Remove metadata
-        self.remove_metadata_for_file(src_path)?;
+        self.remove_metadata_by_keys(&metadata_keys)?;
 
         if self.settings.verbose {
             println!("Permanently deleted {:?}", src_path);
