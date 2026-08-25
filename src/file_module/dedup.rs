@@ -54,7 +54,11 @@ impl<'a> FileManager<'a> {
                 if let Some(original) = seen.get(&hash) {
                     // Duplicate → delete it
                     self.delete_path(path.clone(), true, to_trash)?;
-                    println!("Removed duplicate: {:?} (original: {:?})", path, original);
+                    if self.settings.dry_run {
+                        println!("Would remove duplicate: {:?} (original: {:?})", path, original);
+                    } else {
+                        println!("Removed duplicate: {:?} (original: {:?})", path, original);
+                    }
                 } else {
                     seen.insert(hash, path_str.to_string());
                 }

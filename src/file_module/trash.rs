@@ -7,12 +7,16 @@ use crate::file_module::FileManager;
 use crate::settings::Settings;
 
 impl<'a> FileManager<'a> {
-    pub fn trash_dir() -> Result<PathBuf, FileManagerError> {
-        let trash = if let Some(home) = std::env::var_os("HOME") {
+    fn trash_path() -> Result<PathBuf, FileManagerError> {
+        Ok(if let Some(home) = std::env::var_os("HOME") {
             PathBuf::from(home).join("arkive_trash")
         } else {
             std::env::current_dir()?.join("arkive_trash")
-        };
+        })
+    }
+
+    pub fn trash_dir() -> Result<PathBuf, FileManagerError> {
+        let trash = Self::trash_path()?;
 
         if !trash.exists() {
             std::fs::create_dir_all(&trash)?;
@@ -67,7 +71,18 @@ impl<'a> FileManager<'a> {
     }
 
     pub fn empty_trash(settings: &Settings) -> Result<(), FileManagerError> {
-        let trash = Self::trash_dir()?;
+        let trash = if settings.dry_run {
+            let trash = Self::trash_path()?;
+            if !trash.exists() {
+                if settings.verbose {
+                    println!("[DRY-RUN] Trash is already empty");
+                }
+                return Ok(());
+            }
+            trash
+        } else {
+            Self::trash_dir()?
+        };
 
         if !trash.is_dir() {
             return Err(FileManagerError::InvalidDirectory(format!(
@@ -76,7 +91,8 @@ impl<'a> FileManager<'a> {
             )));
         }
 
-        // Remove contents
+        // List or remove contents. Dry-run must not create a trash directory
+        // or change any of its entries.
         for entry in fs::read_dir(&trash)? {
             let entry = entry?;
             let path = entry.path();
@@ -90,7 +106,11 @@ impl<'a> FileManager<'a> {
                 )));
             }
 
-            if path.is_dir() {
+            if settings.dry_run {
+                if settings.verbose {
+                    println!("[DRY-RUN] Would permanently delete {:?}", path);
+                }
+            } else if path.is_dir() {
                 fs::remove_dir_all(&path)?;
             } else {
                 fs::remove_file(&path)?;
@@ -98,7 +118,11 @@ impl<'a> FileManager<'a> {
         }
 
         if settings.verbose {
-            println!("Trash emptied");
+            if settings.dry_run {
+                println!("[DRY-RUN] Trash would be emptied");
+            } else {
+                println!("Trash emptied");
+            }
         }
 
         Ok(())

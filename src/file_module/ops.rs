@@ -112,7 +112,9 @@ impl<'a> FileManager<'a> {
 
         // Trash handling
         if to_trash && self.settings.enable_trash {
-            let dst = FileManager::unique_trash_path(src_path)?;
+            src_path
+                .file_name()
+                .ok_or_else(|| FileManagerError::InvalidInput("Invalid file name".into()))?;
 
             if self.settings.dry_run {
                 if self.settings.verbose {
@@ -121,6 +123,7 @@ impl<'a> FileManager<'a> {
                 return Ok(());
             }
 
+            let dst = FileManager::unique_trash_path(src_path)?;
             fs::rename(src_path, &dst)?;
 
             if self.settings.verbose {

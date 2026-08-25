@@ -135,7 +135,20 @@ impl<'a> FileManager<'a> {
         if let Some(bar) = progress {
             bar.finish_with_message("Empty directory scan complete");
         }
-        
+
+        if self.settings.dry_run {
+            if self.settings.verbose {
+                for dir_path in empty_dirs.iter().rev() {
+                    println!("[DRY-RUN] Would remove empty directory: {:?}", dir_path);
+                }
+                println!(
+                    "[DRY-RUN] {} empty directories would be removed",
+                    empty_dirs.len()
+                );
+            }
+            return Ok(());
+        }
+
         // Remove empty directories (in reverse order to handle nested)
         for dir_path in empty_dirs.into_iter().rev() {
             if fs::remove_dir(&dir_path).is_ok() {
