@@ -1,22 +1,23 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::file_validation::handlers::{
-    valid_directory,
-    sanitize_file_name,
-};
-use crate::file_module::error::FileManagerError;
 use super::manager::FileManager;
+use crate::file_module::error::FileManagerError;
+use crate::file_validation::handlers::{sanitize_file_name, valid_directory};
 
 impl<'a> FileManager<'a> {
-    pub(crate) fn canonical_destination_file(src: &Path, dst: &Path) -> Result<PathBuf, FileManagerError> {
+    pub(crate) fn canonical_destination_file(
+        src: &Path,
+        dst: &Path,
+    ) -> Result<PathBuf, FileManagerError> {
         if dst.is_dir() {
-            let file_name = src.file_name()
+            let file_name = src
+                .file_name()
                 .ok_or_else(|| FileManagerError::InvalidInput("Invalid source file name".into()))?;
-            
+
             // Sanitize file name to prevent path traversal
             let sanitized_name = sanitize_file_name(file_name);
-            
+
             Ok(dst.join(Path::new(&sanitized_name)))
         } else {
             Ok(dst.to_path_buf())
@@ -95,7 +96,12 @@ impl<'a> FileManager<'a> {
     }
 
     /// Delete a file or directory.
-    pub fn delete_path(&self, path: impl Into<PathBuf>, recursive: bool, to_trash: bool) -> Result<(), FileManagerError> {
+    pub fn delete_path(
+        &self,
+        path: impl Into<PathBuf>,
+        recursive: bool,
+        to_trash: bool,
+    ) -> Result<(), FileManagerError> {
         let _guard = self.acquire_lock();
         let src = path.into();
         let src_path = src.as_path();
@@ -106,12 +112,7 @@ impl<'a> FileManager<'a> {
 
         // Trash handling
         if to_trash && self.settings.enable_trash {
-            let trash = FileManager::trash_dir()?;
-
-            let file_name = src_path.file_name()
-                .ok_or_else(|| FileManagerError::InvalidInput("Invalid file name".into()))?;
-
-            let dst = trash.join(file_name);
+            let dst = FileManager::unique_trash_path(src_path)?;
 
             if self.settings.dry_run {
                 if self.settings.verbose {
@@ -120,7 +121,7 @@ impl<'a> FileManager<'a> {
                 return Ok(());
             }
 
-            fs::rename(src_path, dst)?;
+            fs::rename(src_path, &dst)?;
 
             if self.settings.verbose {
                 println!("Moved {:?} to trash", src_path);
@@ -143,7 +144,10 @@ impl<'a> FileManager<'a> {
 
             if self.settings.dry_run {
                 if self.settings.verbose {
-                    println!("[DRY-RUN] Would permanently delete directory {:?}", src_path);
+                    println!(
+                        "[DRY-RUN] Would permanently delete directory {:?}",
+                        src_path
+                    );
                 }
                 return Ok(());
             }
