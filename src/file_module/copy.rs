@@ -156,17 +156,12 @@ impl<'a> FileManager<'a> {
             }
 
             fs::copy(src, &dest_file)?;
+            validate_hash(src, &dest_file)?;
 
             if self.settings.enable_metadata {
                 let manager = self.metadata_manager_for_destination(&dest_file)?;
                 self.save_metadata_for_file(&dest_file, &manager)?;
             }
-        }
-
-        // Verify file integrity
-        if src.is_file() && !self.settings.dry_run {
-            let dest_file = Self::canonical_destination_file(&src, dst)?;
-            validate_hash(src, &dest_file)?;
         }
 
         if self.settings.verbose {
