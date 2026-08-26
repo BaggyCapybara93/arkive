@@ -1,273 +1,292 @@
 # Arkive
 
-A simple file management utility written in Rust. Primarily made for myself to learn Rust.
+Arkive is a command-line file management utility written in Rust. It supports
+copying, moving, renaming, compressing, removing, deduplicating, and cleaning up
+files and directories.
+
+> Arkive can permanently remove files. Use `--dry-run` to preview destructive
+> operations before running them.
 
 ## Features
 
-- **Move files and directories**: Relocate files with optional recursive directory support
-- **Copy files and directories**: Duplicate files with integrity verification using SHA-256 hashing
-- **Delete files and directories**: Remove files with optional recursive directory deletion and trash support
-- **Compress files and directories**: Create tar.gz archives with optional timestamp prefix
-- **Batch operations**: Execute multiple file operations from a JSON configuration file
-- **Trash management**: Soft-delete files to arkive_trash directory with list and empty commands
-- **Deduplication**: Scan directories for duplicate files (same hash) and remove them
-- **Integrity checking**: Automatic hash verification after copy operations to ensure data integrity
+- Move and copy files or directory trees
+- Verify copied files with SHA-256 hashes
+- Create gzip or Zstandard-compressed tar archives
+- Rename individual paths or bulk-rename matching entries
+- Run file operations in batches from JSON
+- Move removed files into Arkive's trash directory
+- Find and remove duplicate files
+- Find unused files and empty directories
 
-## Global Options
+## Installation
 
-All commands support the following global options:
+Build a release binary with Cargo:
 
 ```bash
-arkive [OPTIONS] <COMMAND>
+cargo build --release
 ```
 
-**Options:**
-- `--no-trash`: Disable trash, permanently delete files
-- `--verbose, -v`: Enable verbose output
-- `--dry-run`: Preview operations without executing
+The binary is written to `target/release/arkive`.
 
-## Usage
+## Command syntax
 
-### Help
-```bash
-arkive help
+```text
+arkive [GLOBAL OPTIONS] <COMMAND> [COMMAND OPTIONS]
 ```
 
-### Move Files
+Global options must be placed before the command:
+
+- `--no-trash` disables Arkive's trash and makes requested removals permanent
+- `-v`, `--verbose` prints additional operation details
+- `--dry-run` previews operations without changing the filesystem
+- `--last-used-directory <PATH>` is currently reserved and has no effect
+- `-h`, `--help` prints help
+
+For help with a specific command, run:
+
 ```bash
-arkive move <source> <destination> [OPTIONS]
+arkive help <COMMAND>
+# or
+arkive <COMMAND> --help
 ```
 
-Move a file or directory to a new location.
+## Commands
 
-**Options:**
-- `--recursive`: Move directories recursively (required for directories)
+### Move
 
-**Examples:**
+```text
+arkive move [--recursive] <SRC> <DEST>
+```
+
+Move a file or directory. Directories require `--recursive`; recursive moves
+copy the directory tree and then remove the source.
+
 ```bash
-# Move a single file
 arkive move file1.txt backup/
-
-# Move a directory recursively
-arkive move myproject/ backup/myproject/ --recursive
+arkive move --recursive myproject/ backup/myproject/
+arkive --dry-run move --recursive myproject/ backup/myproject/
 ```
 
-### Copy Files
-```bash
-arkive copy <source> <destination> [OPTIONS]
+### Copy
+
+```text
+arkive copy [--recursive] <SRC> <DEST>
 ```
 
-Copy a file or directory to a new location with integrity verification.
+Copy a file or directory. Directories require `--recursive`. File copies are
+verified by comparing the source and destination SHA-256 hashes.
 
-**Options:**
-- `--recursive`: Copy directories recursively (required for directories)
-- `--timestamp`: Add timestamp prefix to destination filename (e.g., `20260819_143022_file1.txt`)
-
-**Examples:**
 ```bash
-# Copy a single file
 arkive copy file1.txt backup/
-
-# Copy a directory recursively
-arkive copy myproject/ backup/myproject/ --recursive
-
-# Copy with timestamp prefix
-arkive copy file1.txt backup/ --timestamp
+arkive copy --recursive myproject/ backup/myproject/
 ```
 
-### Compress Files
-```bash
-arkive compress <source> <destination> [OPTIONS]
+Timestamped destination names are controlled by the `use_timestamp` config
+setting; there is currently no `--timestamp` option on this command.
+
+### Compress
+
+```text
+arkive compress [--method <METHOD>] <SRC> <DEST>
 ```
 
-Compress a file or directory into a tar.gz archive.
+Create a tar archive compressed with gzip or Zstandard. Accepted methods are
+`gzip`/`gz` and `zstd`/`zst`. If `--method` is omitted, Arkive uses the method
+from its config.
 
-**Options:**
-- `--timestamp`: Add timestamp prefix to destination filename (e.g., `20260819_143022_file1.txt.tar.gz`)
-
-**Examples:**
 ```bash
-# Compress a single file
-arkive compress file1.txt backup/file1.txt.tar.gz
-
-# Compress a directory
-arkive compress myproject/ backup/myproject.tar.gz
-
-# Compress with timestamp prefix
-arkive compress file1.txt backup/ --timestamp
+arkive compress data/ backup/data.tar.gz
+arkive compress --method zstd data/ backup/data.tar.zst
 ```
 
-### Rename Files
-```bash
-arkive rename <source> <destination>
+Timestamped destination names are controlled by the `use_timestamp` config
+setting; there is currently no `--timestamp` option on this command.
+
+### Rename
+
+Rename one path:
+
+```text
+arkive rename <NAME> <NEW_NAME>
 ```
 
-Rename a file or directory to a new name.
-
-**Examples:**
 ```bash
-# Rename a single file
 arkive rename file1.txt file2.txt
-
-# Rename a file in a directory
-arkive rename file1.txt backup/file1.txt
-
-# Rename a directory
-arkive rename myproject/ myproject_v2/
+arkive rename myproject/ myproject-v2/
 ```
 
-### Batch Operations
+Bulk-rename entries in a directory by glob pattern or extension:
+
+```text
+arkive rename [--recursive] <DIRECTORY> <TEMPLATE> --pattern <PATTERN>
+arkive rename [--recursive] <DIRECTORY> <TEMPLATE> --extension <EXTENSION>
+```
+
+Templates support:
+
+- `{name}`: original name without its final extension
+- `{ext}`: final extension without the dot
+- `{original}`: complete original file name
+
+If a template produces no dot, Arkive preserves the original extension.
+`--pattern` supports `*` and `?` globs. `--pattern` and `--extension` cannot be
+used together.
+
 ```bash
-arkive batch <batch_file>
+# notes.txt -> archived-notes.txt
+arkive rename . 'archived-{name}' --pattern '*.txt'
+
+# report.log -> report-backup.log
+arkive rename logs/ '{name}-backup.{ext}' --extension log
+
+arkive rename --recursive src/ '{name}.old.{ext}' --pattern '*.tmp'
 ```
 
-Execute a batch of file operations from a JSON configuration file.
+### Remove matching files
 
-**Example batch file (batch.json):**
+```text
+arkive remove <PATH> --pattern <PATTERN> [--trash]
+```
+
+Recursively find files below `PATH` whose names match a glob pattern, then
+remove them. Removal is permanent unless `--trash` is supplied and trash is
+enabled. Use quotes around patterns so the shell does not expand them first.
+
+```bash
+arkive --dry-run --verbose remove . --pattern '*.log'
+arkive remove downloads/ --pattern '*.tmp' --trash
+```
+
+Although `--extension` appears in command help, the current CLI definition
+requires `--pattern` and makes the two options conflict. Extension-only removal
+is therefore not currently usable; use a pattern such as `*.log` instead.
+
+### Batch operations
+
+```text
+arkive batch <FILE>
+```
+
+Run operations from a JSON file. The file can contain an `operations` object as
+shown below, or a top-level array of operations. Supported `work_type` values
+are `move`, `copy`, `compress`, and `rename`.
+
 ```json
 {
   "operations": [
     {
       "work_type": "move",
       "source": "file1.txt",
-      "destination": "backup/",
-      "recursive": false
+      "destination": "backup/"
     },
     {
       "work_type": "copy",
       "source": "myproject/",
       "destination": "backup/myproject/",
-      "recursive": true
+      "recursive": true,
+      "timestamp": false
     },
     {
       "work_type": "compress",
       "source": "data/",
-      "destination": "backup/data.tar.gz"
+      "destination": "backup/data.tar.zst",
+      "compression_method": "zstd"
     }
   ]
 }
 ```
 
-**Usage:**
+Each operation accepts `source` and may accept `destination`, `recursive`,
+`timestamp`, `compression_method`, and `cleanup`. Batch operations may run in
+parallel, so avoid operations that modify overlapping paths.
+
 ```bash
 arkive batch batch.json
 ```
 
-### Trash Management
+### Trash management
 
-#### Empty Trash
+Files sent to trash are stored in `~/arkive_trash` when `HOME` is available,
+or in `./arkive_trash` otherwise. Name collisions receive a numeric suffix.
+
 ```bash
-arkive empty-trash [OPTIONS]
+arkive list-trash
+arkive --dry-run --verbose empty-trash
+arkive empty-trash
 ```
 
-Empty the arkive trash directory, permanently deleting all files.
+`empty-trash` permanently removes every non-symlink entry in Arkive's trash.
 
-**Example:**
-```bash
-arkive empty-trash --verbose
+### Deduplicate
+
+```text
+arkive deduplicate [--trash] <PATH>
 ```
 
-#### List Trash
+Recursively find files with identical hashes and remove duplicate copies. By
+default duplicates are deleted permanently; pass `--trash` to retain them in
+Arkive's trash.
+
 ```bash
-arkive list-trash [OPTIONS]
-```
-
-List all files in the arkive trash directory.
-
-**Example:**
-```bash
-arkive list-trash --verbose
-```
-
-### Deduplication
-```bash
-arkive deduplicate <path> [OPTIONS]
-```
-
-Scan a directory for duplicate files (same hash) and remove them.
-
-**Options:**
-- `--trash`: Keep deleted files in arkive trash instead of permanent deletion
-
-**Examples:**
-```bash
-# Permanently delete duplicates
-arkive deduplicate /path/to/folder
-
-# Move duplicates to trash
-arkive deduplicate /path/to/folder --trash
+arkive --dry-run --verbose deduplicate photos/
+arkive deduplicate --trash photos/
 ```
 
 ### Cleanup
-```bash
+
+```text
 arkive cleanup [OPTIONS] [PATH]
 ```
 
-Clean up the workspace with multiple options. This command can perform several cleanup operations in one go.
+`PATH` defaults to the current directory. Options can be combined:
 
-**Options:**
-- `--empty-trash`: Empty the arkive trash directory
-- `--deduplicate`: Scan for and remove duplicate files
-- `--scan-unused`: Scan for unused files (files not accessed in 30+ days)
-- `--scan-empty-dirs`: Scan for and remove empty directories
-- `PATH`: Optional path to scan (defaults to current directory)
+- `--empty-trash` empties Arkive's trash
+- `--deduplicate` removes duplicate files
+- `--scan-unused` finds files not accessed in at least 30 days
+- `--scan-empty-dirs` finds and removes empty directories
 
-**Examples:**
 ```bash
-# Empty trash only
 arkive cleanup --empty-trash
-
-# Remove duplicates only
-arkive cleanup --deduplicate
-
-# Scan for unused files
-arkive cleanup --scan-unused
-
-# Remove empty directories
-arkive cleanup --scan-empty-dirs
-
-# Combine multiple operations
-arkive cleanup --empty-trash --deduplicate --scan-empty-dirs
-
-# Clean a specific directory with multiple operations
-arkive cleanup --path /path/to/directory --deduplicate --scan-unused
-
-# Preview cleanup operations without executing
-arkive cleanup --dry-run --empty-trash --deduplicate
+arkive cleanup --deduplicate --scan-empty-dirs
+arkive cleanup --scan-unused /path/to/directory
+arkive --dry-run --verbose cleanup --deduplicate --scan-empty-dirs .
 ```
 
-## Branch Overview
+## Configuration
 
-This project uses a traditional branching model to maintain stability while allowing active development.
+On first run, Arkive creates `config.json` beside the executable. Supported
+settings include:
 
-### Branches
+```json
+{
+  "enable_trash": true,
+  "verbose": false,
+  "dry_run": false,
+  "recursive": false,
+  "enable_metadata": false,
+  "compression_method": "gzip",
+  "use_timestamp": false,
+  "created_at": 1787616000,
+  "updated_at": 1787616000
+}
+```
 
-**`master`**
-- Primary development branch
-- Contains the latest features and improvements
-- May contain breaking changes during active development
+The timestamp fields are Unix timestamps and are created automatically. Global
+boolean flags can enable or disable selected config behavior for a run, but
+there is currently no CLI command for editing the config.
 
-**`stable`**
-- Production-ready, tested build
-- Should not be modified except for bug fixes and verified updates
+## Development
 
-### Release Process
-
-1. Complete development and testing on `master`
-2. Create a release tag (e.g., `v1.0.0`) from `master`
-3. Merge release tag into `stable`
-4. Update `stable` branch to the tagged version
-5. Announce release with changelog
-
-### Bug Fixes
-
-- Critical bug fixes can be cherry-picked from `master` to `stable`
-- Non-critical fixes should be developed on `master` and merged normally
+```bash
+cargo test --all-targets
+cargo fmt --all -- --check
+cargo clippy --all-targets
+```
 
 ## License
 
-This project is licensed under the MIT License
+Arkive is licensed under the MIT License. See [LICENSE](LICENSE).
 
 ## Contributing
 
-Contributions are welcomed!
+Contributions are welcome.
