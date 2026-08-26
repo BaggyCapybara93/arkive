@@ -6,6 +6,8 @@ mod file_module;
 mod file_validation;
 mod metadata_module;
 mod settings;
+#[cfg(test)]
+mod test;
 
 use crate::cli::cli_handler;
 use crate::config_module::ConfigManager;

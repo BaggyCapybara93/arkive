@@ -214,3 +214,69 @@ impl<'a> FileManager<'a> {
         Ok((actual_destination, ignore_stats))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::FileManager;
+    use crate::settings::Settings;
+    use crate::test::TestDir;
+
+    #[test]
+    fn copy_file_preserves_contents() {
+        let temp = TestDir::new("copy-file");
+        let source = temp.path().join("source.txt");
+        let destination = temp.path().join("destination.txt");
+        std::fs::write(&source, b"arkive test data").unwrap();
+
+        let settings = Settings::default();
+        let manager = FileManager::new(&source, &destination, &settings);
+        let copied_path = manager.copy_path(false, false).unwrap();
+
+        assert_eq!(copied_path, destination);
+        assert_eq!(std::fs::read(destination).unwrap(), b"arkive test data");
+        assert_eq!(std::fs::read(source).unwrap(), b"arkive test data");
+    }
+
+    #[test]
+    fn recursive_copy_preserves_nested_tree() {
+        let temp = TestDir::new("copy-tree");
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        std::fs::create_dir_all(source.join("nested")).unwrap();
+        std::fs::write(source.join("root.txt"), b"root").unwrap();
+        std::fs::write(source.join("nested/child.txt"), b"child").unwrap();
+
+        let settings = Settings::default();
+        FileManager::new(&source, &destination, &settings)
+            .copy_path(true, false)
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read(destination.join("root.txt")).unwrap(),
+            b"root"
+        );
+        assert_eq!(
+            std::fs::read(destination.join("nested/child.txt")).unwrap(),
+            b"child"
+        );
+    }
+
+    #[test]
+    fn dry_run_copy_does_not_create_destination() {
+        let temp = TestDir::new("copy-dry-run");
+        let source = temp.path().join("source.txt");
+        let destination = temp.path().join("destination.txt");
+        std::fs::write(&source, b"keep me").unwrap();
+        let settings = Settings {
+            dry_run: true,
+            ..Settings::default()
+        };
+
+        FileManager::new(&source, &destination, &settings)
+            .copy_path(false, false)
+            .unwrap();
+
+        assert!(!destination.exists());
+        assert_eq!(std::fs::read(source).unwrap(), b"keep me");
+    }
+}

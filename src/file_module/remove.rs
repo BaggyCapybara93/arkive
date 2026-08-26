@@ -175,3 +175,59 @@ impl<'a> FileManager<'a> {
         regex
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{FileManager, RemoveOptions};
+    use crate::settings::Settings;
+    use crate::test::TestDir;
+
+    #[test]
+    fn remove_files_only_deletes_recursive_pattern_matches() {
+        let temp = TestDir::new("remove-pattern");
+        let nested = temp.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::write(temp.path().join("root.log"), b"remove").unwrap();
+        std::fs::write(nested.join("nested.log"), b"remove").unwrap();
+        std::fs::write(nested.join("keep.txt"), b"keep").unwrap();
+
+        let settings = Settings::default();
+        FileManager::new(temp.path(), "", &settings)
+            .remove_files(
+                "*.log",
+                None,
+                RemoveOptions {
+                    trash: false,
+                    dry_run: false,
+                    verbose: false,
+                },
+            )
+            .unwrap();
+
+        assert!(!temp.path().join("root.log").exists());
+        assert!(!nested.join("nested.log").exists());
+        assert_eq!(std::fs::read(nested.join("keep.txt")).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn dry_run_remove_leaves_matching_files_untouched() {
+        let temp = TestDir::new("remove-dry-run");
+        let matching = temp.path().join("keep.log");
+        std::fs::write(&matching, b"keep").unwrap();
+
+        let settings = Settings::default();
+        FileManager::new(temp.path(), "", &settings)
+            .remove_files(
+                "*.log",
+                None,
+                RemoveOptions {
+                    trash: false,
+                    dry_run: true,
+                    verbose: false,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(std::fs::read(matching).unwrap(), b"keep");
+    }
+}

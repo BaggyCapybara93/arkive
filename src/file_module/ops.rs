@@ -177,3 +177,63 @@ impl<'a> FileManager<'a> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::FileManager;
+    use crate::settings::Settings;
+    use crate::test::TestDir;
+
+    #[test]
+    fn move_file_removes_source_and_preserves_contents() {
+        let temp = TestDir::new("move-file");
+        let source = temp.path().join("source.txt");
+        let destination = temp.path().join("destination.txt");
+        std::fs::write(&source, b"move me").unwrap();
+
+        let settings = Settings::default();
+        let moved_path = FileManager::new(&source, &destination, &settings)
+            .move_path()
+            .unwrap();
+
+        assert_eq!(moved_path, destination);
+        assert!(!source.exists());
+        assert_eq!(std::fs::read(destination).unwrap(), b"move me");
+    }
+
+    #[test]
+    fn dry_run_move_leaves_source_untouched() {
+        let temp = TestDir::new("move-dry-run");
+        let source = temp.path().join("source.txt");
+        let destination = temp.path().join("destination.txt");
+        std::fs::write(&source, b"stay here").unwrap();
+        let settings = Settings {
+            dry_run: true,
+            ..Settings::default()
+        };
+
+        FileManager::new(&source, &destination, &settings)
+            .move_path()
+            .unwrap();
+
+        assert_eq!(std::fs::read(source).unwrap(), b"stay here");
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn dry_run_delete_leaves_file_untouched() {
+        let temp = TestDir::new("delete-dry-run");
+        let source = temp.path().join("source.txt");
+        std::fs::write(&source, b"do not delete").unwrap();
+        let settings = Settings {
+            dry_run: true,
+            ..Settings::default()
+        };
+
+        FileManager::new(&source, "", &settings)
+            .delete_path(&source, false, false)
+            .unwrap();
+
+        assert_eq!(std::fs::read(source).unwrap(), b"do not delete");
+    }
+}
