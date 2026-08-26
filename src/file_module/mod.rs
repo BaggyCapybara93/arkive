@@ -4,6 +4,7 @@ pub mod copy;
 pub mod dedup;
 pub mod deploy;
 pub mod error;
+pub mod ignore;
 pub mod manager;
 pub mod metadata;
 pub mod ops;

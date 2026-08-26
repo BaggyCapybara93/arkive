@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::file_module::add_timestamp_to_path;
 use crate::file_module::error::FileManagerError;
+use crate::file_module::ignore::{IgnoreMatcher, IgnoreStats};
 use crate::file_validation::handlers::{valid_directory, validate_compress_path};
 
 use super::manager::FileManager;
@@ -44,8 +45,7 @@ fn create_encoder(
         ))),
 
         CompressionMethod::Zstd => {
-            let encoder =
-                zstd::Encoder::new(file, 3).map_err(|e| FileManagerError::Io(e.into()))?;
+            let encoder = zstd::Encoder::new(file, 3).map_err(FileManagerError::Io)?;
             Ok(Box::new(encoder.auto_finish()))
         }
     }
@@ -58,7 +58,18 @@ impl<'a> FileManager<'a> {
         method: CompressionMethod,
         add_timestamp: bool,
     ) -> Result<std::path::PathBuf, FileManagerError> {
+        self.compress_path_filtered(method, add_timestamp, None)
+            .map(|(path, _)| path)
+    }
+
+    pub fn compress_path_filtered(
+        &self,
+        method: CompressionMethod,
+        add_timestamp: bool,
+        matcher: Option<&IgnoreMatcher>,
+    ) -> Result<(std::path::PathBuf, IgnoreStats), FileManagerError> {
         let _guard = self.acquire_lock();
+        let mut ignore_stats = IgnoreStats::default();
         let src = self.file_path.as_path();
         let dst = self.file_dest.as_path();
 
@@ -83,7 +94,7 @@ impl<'a> FileManager<'a> {
                     src, final_dst, method
                 );
             }
-            return Ok(final_dst);
+            return Ok((final_dst, ignore_stats));
         }
 
         let file = fs::File::create(&final_dst)?;
@@ -94,7 +105,14 @@ impl<'a> FileManager<'a> {
             let src_name = src
                 .file_name()
                 .ok_or_else(|| FileManagerError::InvalidInput("Invalid directory name".into()))?;
-            tar.append_dir_all(src_name, src)?;
+            tar.append_dir(src_name, src)?;
+            append_directory_filtered(
+                &mut tar,
+                src,
+                std::path::Path::new(src_name),
+                matcher,
+                &mut ignore_stats,
+            )?;
         } else {
             let name = src
                 .file_name()
@@ -103,6 +121,36 @@ impl<'a> FileManager<'a> {
         }
 
         tar.finish()?;
-        Ok(final_dst)
+        Ok((final_dst, ignore_stats))
     }
+}
+
+fn append_directory_filtered<W: Write>(
+    archive: &mut tar::Builder<W>,
+    source: &std::path::Path,
+    archive_path: &std::path::Path,
+    matcher: Option<&IgnoreMatcher>,
+    stats: &mut IgnoreStats,
+) -> Result<(), FileManagerError> {
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        let metadata = entry.metadata()?;
+        if matcher
+            .is_some_and(|matcher| matcher.is_excluded(&path, file_type.is_dir(), metadata.len()))
+        {
+            stats.record(&path)?;
+            continue;
+        }
+
+        let destination = archive_path.join(entry.file_name());
+        if file_type.is_dir() {
+            archive.append_dir(&destination, &path)?;
+            append_directory_filtered(archive, &path, &destination, matcher, stats)?;
+        } else {
+            archive.append_path_with_name(&path, &destination)?;
+        }
+    }
+    Ok(())
 }

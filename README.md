@@ -130,6 +130,62 @@ arkive deploy test.tar.gz --force
 Deployment copies regular and directory backups, so the backup remains intact.
 Gzip and Zstandard archives are extracted according to their saved metadata.
 
+## Ignore rules
+
+Recursive `copy`, `move`, and `compress` operations automatically load ignore
+rules in this order:
+
+1. The global `$XDG_CONFIG_HOME/arkive/ignore` file, or
+   `~/.config/arkive/ignore` when `XDG_CONFIG_HOME` is unset
+2. `.arkiveignore` in the source directory
+3. Files passed with `--ignore-file`
+4. Patterns passed with `--exclude`
+5. Patterns passed with `--include`
+
+Later rules take precedence. Rules use familiar gitignore-style `*`, `**`,
+`?`, directory patterns, comments, anchored paths, and `!` negation:
+
+```gitignore
+# .arkiveignore
+target/
+*.log
+!logs/important.log
+**/node_modules/
+```
+
+Arkive also supports size predicates. Units are binary (for example, `1MB` is
+1,048,576 bytes):
+
+```gitignore
+# Exclude every file larger than 500 MB
+:size > 500MB
+
+# Exclude large videos only
+videos/** :size > 2GB
+```
+
+Rules can be adjusted for a single operation:
+
+```bash
+arkive compress project project.tar.gz --exclude '*.tmp'
+arkive copy project backup --recursive --include 'logs/important.log'
+arkive compress project project.tar.gz --exclude-larger-than 2GB
+arkive copy project backup --recursive --ignore-file team.ignore
+arkive copy project backup --recursive --no-global-ignore --no-local-ignore
+```
+
+Use `ignore check` to explain a decision:
+
+```bash
+arkive ignore check project/target/debug/app --root project
+```
+
+When a recursive move excludes anything, Arkive removes only successfully
+copied items. Excluded files and directories remain at the source, along with
+the local `.arkiveignore`. Deploying that partial move later merges the backed
+up content into the remaining source tree instead of deleting the excluded
+items. Portable deployment metadata records the applied rules for auditing.
+
 ### Rename
 
 Rename one path:
@@ -147,7 +203,7 @@ Bulk-rename entries in a directory by glob pattern or extension:
 
 ```text
 arkive rename [--recursive] <DIRECTORY> <TEMPLATE> --pattern <PATTERN>
-arkive rename [--recursive] <DIRECTORY> <TEMPLATE> --extension <EXTENSION>
+arkive rename [--recursive] <DIRECTORY> <TEMPLATE>
 ```
 
 Templates support:

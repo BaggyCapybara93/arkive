@@ -5,6 +5,7 @@ use indicatif::ProgressBar;
 
 use crate::file_module::add_timestamp_to_path;
 use crate::file_module::error::FileManagerError;
+use crate::file_module::ignore::{IgnoreMatcher, IgnoreStats};
 use crate::file_module::manager::FileManager;
 use crate::file_validation::handlers::{ensure_not_nested, valid_directory, validate_hash};
 
@@ -27,6 +28,16 @@ pub fn copy_dir_recursive(
     src: &Path,
     dst: &Path,
     progress: Option<&ProgressBar>,
+) -> Result<(), FileManagerError> {
+    copy_dir_recursive_filtered(src, dst, progress, None, &mut IgnoreStats::default())
+}
+
+pub fn copy_dir_recursive_filtered(
+    src: &Path,
+    dst: &Path,
+    progress: Option<&ProgressBar>,
+    matcher: Option<&IgnoreMatcher>,
+    stats: &mut IgnoreStats,
 ) -> Result<(), FileManagerError> {
     if src.is_dir() {
         valid_directory(src)?;
@@ -51,9 +62,21 @@ pub fn copy_dir_recursive(
         let file_type = entry.file_type()?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
+        let metadata = entry.metadata()?;
+
+        if matcher.is_some_and(|matcher| {
+            matcher.is_excluded(&src_path, file_type.is_dir(), metadata.len())
+        }) {
+            let previous_entries = stats.entries;
+            stats.record(&src_path)?;
+            if let Some(bar) = progress {
+                bar.inc(stats.entries - previous_entries);
+            }
+            continue;
+        }
 
         if file_type.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path, progress)?;
+            copy_dir_recursive_filtered(&src_path, &dst_path, progress, matcher, stats)?;
         } else {
             if let Some(parent) = dst_path.parent() {
                 fs::create_dir_all(parent)?;
@@ -76,7 +99,18 @@ impl<'a> FileManager<'a> {
         recursive: bool,
         add_timestamp: bool,
     ) -> Result<std::path::PathBuf, FileManagerError> {
+        self.copy_path_filtered(recursive, add_timestamp, None)
+            .map(|(path, _)| path)
+    }
+
+    pub fn copy_path_filtered(
+        &self,
+        recursive: bool,
+        add_timestamp: bool,
+        matcher: Option<&IgnoreMatcher>,
+    ) -> Result<(std::path::PathBuf, IgnoreStats), FileManagerError> {
         let _guard = self.acquire_lock();
+        let mut ignore_stats = IgnoreStats::default();
         let src = self.file_path.as_path();
         let dst = self.file_dest.as_path();
         let final_dst = if add_timestamp {
@@ -100,7 +134,7 @@ impl<'a> FileManager<'a> {
                 if self.settings.verbose {
                     println!("[DRY-RUN] Would copy directory {:?} to {:?}", src, dst);
                 }
-                return Ok(actual_destination);
+                return Ok((actual_destination, ignore_stats));
             }
 
             let dest_dir = actual_destination.clone();
@@ -113,7 +147,13 @@ impl<'a> FileManager<'a> {
                 "Copying directory",
             ));
 
-            copy_dir_recursive(src, &dest_dir, progress.as_ref())?;
+            copy_dir_recursive_filtered(
+                src,
+                &dest_dir,
+                progress.as_ref(),
+                matcher,
+                &mut ignore_stats,
+            )?;
 
             // Only finish the bar here, once, after the ENTIRE recursive copy
             // has actually completed.
@@ -130,7 +170,7 @@ impl<'a> FileManager<'a> {
                 if self.settings.verbose {
                     println!("[DRY-RUN] Would copy file {:?} to {:?}", src, dst);
                 }
-                return Ok(actual_destination);
+                return Ok((actual_destination, ignore_stats));
             }
 
             let dest_file = actual_destination.clone();
@@ -153,7 +193,7 @@ impl<'a> FileManager<'a> {
                             println!("Copied {:?} to {:?}", src, dst);
                         }
 
-                        return Ok(dest_file);
+                        return Ok((dest_file, ignore_stats));
                     }
                 }
             }
@@ -171,6 +211,6 @@ impl<'a> FileManager<'a> {
             println!("Copied {:?} to {:?}", src, dst);
         }
 
-        Ok(actual_destination)
+        Ok((actual_destination, ignore_stats))
     }
 }

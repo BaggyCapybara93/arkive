@@ -25,6 +25,10 @@ pub struct DeploymentManifest {
     original_path: PathBuf,
     backup_path: PathBuf,
     compression_method: Option<CompressionMethod>,
+    #[serde(default)]
+    ignore_rules: Vec<String>,
+    #[serde(default)]
+    partial_move: bool,
     #[serde(with = "chrono::serde::ts_seconds")]
     created_at: DateTime<Utc>,
 }
@@ -38,11 +42,23 @@ pub fn manifest_path(backup: &Path) -> Result<PathBuf, FileManagerError> {
     Ok(backup.with_file_name(manifest_name))
 }
 
+#[cfg(test)]
 pub fn save_manifest(
     source: &Path,
     backup: &Path,
     kind: BackupKind,
     compression_method: Option<CompressionMethod>,
+) -> Result<PathBuf, FileManagerError> {
+    save_manifest_with_ignores(source, backup, kind, compression_method, &[], false)
+}
+
+pub fn save_manifest_with_ignores(
+    source: &Path,
+    backup: &Path,
+    kind: BackupKind,
+    compression_method: Option<CompressionMethod>,
+    ignore_rules: &[String],
+    partial_move: bool,
 ) -> Result<PathBuf, FileManagerError> {
     let original_path = source.to_path_buf();
     let backup_path = fs::canonicalize(backup)?;
@@ -52,6 +68,8 @@ pub fn save_manifest(
         original_path,
         backup_path,
         compression_method,
+        ignore_rules: ignore_rules.to_vec(),
+        partial_move,
         created_at: Utc::now(),
     };
     let path = manifest_path(backup)?;
@@ -89,7 +107,12 @@ pub fn deploy(
         .map(Path::to_path_buf)
         .unwrap_or(manifest.original_path);
 
-    if target.exists() && !force {
+    let can_merge_partial_move = manifest.partial_move
+        && matches!(manifest.kind, BackupKind::Move)
+        && target.is_dir()
+        && backup.is_dir();
+
+    if target.exists() && !force && !can_merge_partial_move {
         return Err(FileManagerError::InvalidInput(format!(
             "Restore destination {:?} already exists; use --force to replace it",
             target
@@ -107,7 +130,7 @@ pub fn deploy(
 
     match manifest.kind {
         BackupKind::Copy | BackupKind::Move => {
-            if force && target.exists() {
+            if force && target.exists() && !can_merge_partial_move {
                 remove_existing(&target)?;
             }
             restore_copy(backup, &target)?

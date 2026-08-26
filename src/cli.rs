@@ -4,14 +4,14 @@ use crate::file_module::FileManager;
 use crate::file_module::cleanup;
 use crate::file_module::compress::CompressionMethod;
 use crate::file_module::deploy::{self, BackupKind};
+use crate::file_module::ignore::{IgnoreMatcher, IgnoreOptions};
 use crate::file_module::remove;
 use crate::settings::Settings;
-use clap::{Parser, Subcommand, value_parser};
+use clap::{Args, Parser, Subcommand, value_parser};
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(name = "arkive", about = "A simple file management tool")]
-
 pub struct CLI {
     #[arg(long, help = "Disable trash, permanently delete files")]
     pub no_trash: bool,
@@ -29,6 +29,46 @@ pub struct CLI {
     pub command: Command,
 }
 
+#[derive(Args, Clone, Debug, Default)]
+pub struct IgnoreArgs {
+    /// Do not load the global Arkive ignore file
+    #[arg(long)]
+    no_global_ignore: bool,
+
+    /// Do not load .arkiveignore from the source directory
+    #[arg(long)]
+    no_local_ignore: bool,
+
+    /// Load an additional ignore file (may be repeated)
+    #[arg(long = "ignore-file")]
+    ignore_files: Vec<PathBuf>,
+
+    /// Exclude a gitignore-style pattern (may be repeated)
+    #[arg(long)]
+    exclude: Vec<String>,
+
+    /// Re-include a pattern with highest precedence (may be repeated)
+    #[arg(long)]
+    include: Vec<String>,
+
+    /// Exclude files larger than a size such as 500MB or 2GB
+    #[arg(long)]
+    exclude_larger_than: Option<String>,
+}
+
+impl From<&IgnoreArgs> for IgnoreOptions {
+    fn from(args: &IgnoreArgs) -> Self {
+        Self {
+            no_global: args.no_global_ignore,
+            no_local: args.no_local_ignore,
+            files: args.ignore_files.clone(),
+            excludes: args.exclude.clone(),
+            includes: args.include.clone(),
+            exclude_larger_than: args.exclude_larger_than.clone(),
+        }
+    }
+}
+
 #[derive(Subcommand)]
 pub enum Command {
     /// Move a file or directory
@@ -44,6 +84,9 @@ pub enum Command {
         /// Save portable metadata so this backup can be deployed later
         #[arg(long)]
         metadata: bool,
+
+        #[command(flatten)]
+        ignore: IgnoreArgs,
     },
 
     /// Copy a file or directory
@@ -60,6 +103,9 @@ pub enum Command {
         /// Save portable metadata so this backup can be deployed later
         #[arg(long)]
         metadata: bool,
+
+        #[command(flatten)]
+        ignore: IgnoreArgs,
     },
 
     /// Compress a file or directory into a tar.gz archive
@@ -76,6 +122,9 @@ pub enum Command {
         /// Save portable metadata so this archive can be deployed later
         #[arg(long)]
         metadata: bool,
+
+        #[command(flatten)]
+        ignore: IgnoreArgs,
     },
 
     /// Restore a backup to its recorded original path
@@ -90,6 +139,12 @@ pub enum Command {
         /// Replace an existing destination
         #[arg(long)]
         force: bool,
+    },
+
+    /// Inspect ignore decisions
+    Ignore {
+        #[command(subcommand)]
+        command: IgnoreCommand,
     },
 
     /// Rename a file or directory, or rename matching files/folders in a directory
@@ -171,24 +226,59 @@ pub enum Command {
     },
 }
 
+#[derive(Subcommand)]
+pub enum IgnoreCommand {
+    /// Explain whether a path is included or excluded
+    Check {
+        /// File or directory to check
+        path: PathBuf,
+
+        /// Source root containing the local .arkiveignore
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        #[command(flatten)]
+        ignore: IgnoreArgs,
+    },
+}
+
 fn handle_move(
     src: &Path,
     dest: &Path,
     recursive: bool,
     metadata: bool,
+    ignore_args: &IgnoreArgs,
     settings: &Settings,
 ) -> Result<(), AppError> {
     let original = std::fs::canonicalize(src)?;
+    let matcher = IgnoreMatcher::build(src, &IgnoreOptions::from(ignore_args))?;
     let fm = FileManager::new(src, dest, settings);
+    let mut partial_move = false;
     let backup = if recursive {
-        let backup = fm.copy_path(true, settings.use_timestamp)?;
-        fm.delete_path(src, true, false)?;
+        let (backup, ignored) =
+            fm.copy_path_filtered(true, settings.use_timestamp, Some(&matcher))?;
+        if !settings.dry_run {
+            if ignored.entries == 0 {
+                fm.delete_path(src, true, false)?;
+            } else {
+                partial_move = true;
+                matcher.remove_included_sources(src)?;
+            }
+        }
+        print_ignore_summary(&ignored, settings);
         backup
     } else {
         fm.move_path()?
     };
     if metadata && !settings.dry_run {
-        deploy::save_manifest(&original, &backup, BackupKind::Move, None)?;
+        deploy::save_manifest_with_ignores(
+            &original,
+            &backup,
+            BackupKind::Move,
+            None,
+            matcher.descriptions(),
+            partial_move,
+        )?;
     }
     Ok(())
 }
@@ -198,13 +288,24 @@ fn handle_copy(
     dest: &Path,
     recursive: bool,
     metadata: bool,
+    ignore_args: &IgnoreArgs,
     settings: &Settings,
 ) -> Result<(), AppError> {
     let original = std::fs::canonicalize(src)?;
+    let matcher = IgnoreMatcher::build(src, &IgnoreOptions::from(ignore_args))?;
     let fm = FileManager::new(src, dest, settings);
-    let backup = fm.copy_path(recursive, settings.use_timestamp)?;
+    let (backup, ignored) =
+        fm.copy_path_filtered(recursive, settings.use_timestamp, Some(&matcher))?;
+    print_ignore_summary(&ignored, settings);
     if metadata && !settings.dry_run {
-        deploy::save_manifest(&original, &backup, BackupKind::Copy, None)?;
+        deploy::save_manifest_with_ignores(
+            &original,
+            &backup,
+            BackupKind::Copy,
+            None,
+            matcher.descriptions(),
+            false,
+        )?;
     }
     Ok(())
 }
@@ -214,21 +315,55 @@ fn handle_compress(
     dest: &Path,
     method: Option<CompressionMethod>,
     metadata: bool,
+    ignore_args: &IgnoreArgs,
     settings: &Settings,
 ) -> Result<(), AppError> {
     let original = std::fs::canonicalize(src)?;
+    let matcher = IgnoreMatcher::build(src, &IgnoreOptions::from(ignore_args))?;
     let fm = FileManager::new(src, dest, settings);
     let compression_method = method.unwrap_or(settings.compression_method);
-    let backup = fm.compress_path(compression_method, settings.use_timestamp)?;
+    let (backup, ignored) =
+        fm.compress_path_filtered(compression_method, settings.use_timestamp, Some(&matcher))?;
+    print_ignore_summary(&ignored, settings);
     if metadata && !settings.dry_run {
-        deploy::save_manifest(
+        deploy::save_manifest_with_ignores(
             &original,
             &backup,
             BackupKind::Compress,
             Some(compression_method),
+            matcher.descriptions(),
+            false,
         )?;
     }
     Ok(())
+}
+
+fn print_ignore_summary(stats: &crate::file_module::ignore::IgnoreStats, settings: &Settings) {
+    if settings.verbose && stats.entries > 0 {
+        println!(
+            "Excluded {} item(s) totaling {} bytes",
+            stats.entries, stats.bytes
+        );
+    }
+}
+
+fn handle_ignore(command: IgnoreCommand) -> Result<(), AppError> {
+    match command {
+        IgnoreCommand::Check { path, root, ignore } => {
+            let matcher = IgnoreMatcher::build(&root, &IgnoreOptions::from(&ignore))?;
+            let canonical_path = std::fs::canonicalize(&path)?;
+            let metadata = std::fs::metadata(&canonical_path)?;
+            let (excluded, reason) =
+                matcher.decision(&canonical_path, metadata.is_dir(), metadata.len());
+            println!(
+                "{}: {:?}",
+                if excluded { "EXCLUDED" } else { "INCLUDED" },
+                path
+            );
+            println!("Matched rule: {}", reason.unwrap_or("none"));
+            Ok(())
+        }
+    }
 }
 
 fn handle_rename(
@@ -324,19 +459,22 @@ pub fn cli_handler(cmd: Command, settings: &Settings) -> Result<(), AppError> {
             dest,
             recursive,
             metadata,
-        } => handle_move(&src, &dest, recursive, metadata, settings),
+            ignore,
+        } => handle_move(&src, &dest, recursive, metadata, &ignore, settings),
         Command::Copy {
             src,
             dest,
             recursive,
             metadata,
-        } => handle_copy(&src, &dest, recursive, metadata, settings),
+            ignore,
+        } => handle_copy(&src, &dest, recursive, metadata, &ignore, settings),
         Command::Compress {
             src,
             dest,
             method,
             metadata,
-        } => handle_compress(&src, &dest, method, metadata, settings),
+            ignore,
+        } => handle_compress(&src, &dest, method, metadata, &ignore, settings),
         Command::Deploy {
             backup,
             destination,
@@ -345,6 +483,7 @@ pub fn cli_handler(cmd: Command, settings: &Settings) -> Result<(), AppError> {
             deploy::deploy(&backup, destination.as_deref(), force, settings)?;
             Ok(())
         }
+        Command::Ignore { command } => handle_ignore(command),
         Command::Rename {
             name,
             new_name,
