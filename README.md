@@ -40,7 +40,6 @@ Global options must be placed before the command:
 - `--no-trash` disables Arkive's trash and makes requested removals permanent
 - `-v`, `--verbose` prints additional operation details
 - `--dry-run` previews operations without changing the filesystem
-- `--last-used-directory <PATH>` is currently reserved and has no effect
 - `-h`, `--help` prints help
 
 For help with a specific command, run:
@@ -242,10 +241,6 @@ enabled. Use quotes around patterns so the shell does not expand them first.
 arkive --dry-run --verbose remove . --pattern '*.log'
 arkive remove downloads/ --pattern '*.tmp' --trash
 ```
-
-Although `--extension` appears in command help, the current CLI definition
-requires `--pattern` and makes the two options conflict. Extension-only removal
-is therefore not currently usable; use a pattern such as `*.log` instead.
 
 ### Batch operations
 
