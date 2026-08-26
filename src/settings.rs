@@ -1,4 +1,3 @@
-
 use crate::file_module::compress::CompressionMethod;
 
 #[derive(Clone, Copy, Debug)]
@@ -24,6 +23,4 @@ impl Default for Settings {
             use_timestamp: false,
         }
     }
-}   
-
-
+}

@@ -23,7 +23,6 @@ fn count_files_recursive(dir: &Path) -> Result<u64, FileManagerError> {
 }
 
 impl<'a> FileManager<'a> {
-    
     fn dedup_dir(
         &self,
         dir: &std::path::Path,
@@ -55,7 +54,10 @@ impl<'a> FileManager<'a> {
                     // Duplicate → delete it
                     self.delete_path(path.clone(), true, to_trash)?;
                     if self.settings.dry_run {
-                        println!("Would remove duplicate: {:?} (original: {:?})", path, original);
+                        println!(
+                            "Would remove duplicate: {:?} (original: {:?})",
+                            path, original
+                        );
                     } else {
                         println!("Removed duplicate: {:?} (original: {:?})", path, original);
                     }
@@ -88,10 +90,8 @@ impl<'a> FileManager<'a> {
         }
 
         let total_files = count_files_recursive(src)?;
-        let progress = FileManager::maybe_create_progress_bar(
-            total_files.max(1),
-            "Scanning for duplicates",
-        );
+        let progress =
+            FileManager::maybe_create_progress_bar(total_files.max(1), "Scanning for duplicates");
 
         let mut seen: HashMap<String, String> = HashMap::new();
         self.dedup_dir(src, &mut seen, to_trash, progress.as_ref())?;

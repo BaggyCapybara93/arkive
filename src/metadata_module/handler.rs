@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use std::{fs, path::Path};
 
 use crate::file_validation::hash::hash_file;
-use crate::metadata_module::{MetadataError};
+use crate::metadata_module::MetadataError;
 use crate::metadata_module::structs::Metadata;
 
 pub struct MetadataHandler;
@@ -29,6 +29,11 @@ impl MetadataHandler {
 
         let sha256 = hash_file(file_str)?;
 
-        Ok(Metadata::new(canonical_path, file_size, sha256, modified_at))
+        Ok(Metadata::new(
+            canonical_path,
+            file_size,
+            sha256,
+            modified_at,
+        ))
     }
 }

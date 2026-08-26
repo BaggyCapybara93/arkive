@@ -1,9 +1,9 @@
-use serde::Deserialize;
-use crate::file_module::{FileManager, FileManagerError};
 use crate::file_module::cleanup::CleanupOptions;
-use std::sync::Arc;
+use crate::file_module::{FileManager, FileManagerError};
 use crate::settings::Settings;
 use indicatif::ProgressBar;
+use serde::Deserialize;
+use std::sync::Arc;
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "lowercase")]
@@ -39,7 +39,9 @@ impl Job {
     /// thread picked this job up. It's incremented only after the job (and any
     /// cleanup) truly succeeds, so the bar reflects real completions.
     pub fn execute(&self, progress: Option<&ProgressBar>) -> Result<(), FileManagerError> {
-        let settings = self.settings.as_ref()
+        let settings = self
+            .settings
+            .as_ref()
             .ok_or_else(|| FileManagerError::InvalidInput("Settings not provided".to_string()))?;
         let recursive = self.recursive.unwrap_or(settings.recursive);
         let dest = match &self.destination {
@@ -60,7 +62,7 @@ impl Job {
                         // Rollback on failure
                         fm.delete_path(&fm.file_dest, true, false)?;
                         return Err(FileManagerError::InvalidInput(
-                            "Recursive move failed: destination not created".to_string()
+                            "Recursive move failed: destination not created".to_string(),
                         ));
                     }
                 } else {
@@ -72,7 +74,8 @@ impl Job {
                 fm.copy_path(recursive, add_timestamp)?;
             }
             WorkType::Compress => {
-                let compression_method = self.compression_method
+                let compression_method = self
+                    .compression_method
                     .as_ref()
                     .map(|m| m.clone().into())
                     .or_else(|| self.settings.as_ref().map(|s| s.compression_method));

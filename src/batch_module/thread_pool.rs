@@ -1,10 +1,10 @@
+use crate::batch_module::{BatchError, Job};
+use indicatif::ProgressBar;
 use std::sync::Arc;
 use std::{
-    sync::{mpsc, Mutex},
+    sync::{Mutex, mpsc},
     thread,
 };
-use crate::batch_module::{Job, BatchError};
-use indicatif::ProgressBar;
 
 pub enum ThreadMessage {
     Job(Job),
@@ -56,18 +56,18 @@ impl ThreadPool {
                     };
 
                     match message {
-                        Ok(ThreadMessage::Job(job)) => {
-                            match job.execute(progress.as_ref()) {
-                                Ok(_) => {
-                                    let _ = result_sender.send(ThreadResult::Ok);
-                                }
-                                Err(e) => {
-                                    let _ = result_sender.send(ThreadResult::Err(format!("Worker {id} failed to execute job: {e}")));
-                                }
+                        Ok(ThreadMessage::Job(job)) => match job.execute(progress.as_ref()) {
+                            Ok(_) => {
+                                let _ = result_sender.send(ThreadResult::Ok);
                             }
-                        }
+                            Err(e) => {
+                                let _ = result_sender.send(ThreadResult::Err(format!(
+                                    "Worker {id} failed to execute job: {e}"
+                                )));
+                            }
+                        },
 
-                        Ok (ThreadMessage::Shutdown) => break,
+                        Ok(ThreadMessage::Shutdown) => break,
                         Err(_) => break,
                     }
                 }
@@ -76,7 +76,11 @@ impl ThreadPool {
             workers.push(Worker { handle });
         }
 
-        ThreadPool { workers, sender, result_receiver }
+        ThreadPool {
+            workers,
+            sender,
+            result_receiver,
+        }
     }
 
     pub fn join(self) -> Result<(), BatchError> {
@@ -85,7 +89,9 @@ impl ThreadPool {
         }
 
         for worker in self.workers {
-            worker.handle.join()
+            worker
+                .handle
+                .join()
                 .map_err(|_| BatchError::ThreadPool("Worker thread panicked".into()))?;
         }
 
@@ -99,8 +105,8 @@ impl ThreadPool {
     }
 
     pub fn add_job(&self, job: Job) -> Result<(), BatchError> {
-        self.sender.send(ThreadMessage::Job(job))
-                .map_err(|e| BatchError::ThreadPool(e.to_string()))
+        self.sender
+            .send(ThreadMessage::Job(job))
+            .map_err(|e| BatchError::ThreadPool(e.to_string()))
     }
-
 }

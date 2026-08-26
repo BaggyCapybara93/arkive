@@ -2,8 +2,8 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::file_module::error::FileManagerError;
 use crate::file_module::FileManager;
+use crate::file_module::error::FileManagerError;
 use crate::settings::Settings;
 
 impl<'a> FileManager<'a> {

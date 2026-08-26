@@ -43,7 +43,7 @@ impl<'a> FileManager<'a> {
     }
 
     /// Move a file or directory to the destination.
-    pub fn move_path(&self) -> Result<(), FileManagerError> {
+    pub fn move_path(&self) -> Result<PathBuf, FileManagerError> {
         let _guard = self.acquire_lock();
         let src = self.file_path.as_path();
         let dst = self.file_dest.as_path();
@@ -56,7 +56,7 @@ impl<'a> FileManager<'a> {
             if self.settings.verbose {
                 println!("[DRY-RUN] Would move {:?} to {:?}", src, dst);
             }
-            return Ok(());
+            return Ok(dst.to_path_buf());
         }
 
         let source_metadata_keys = self.metadata_keys_for_path(src)?;
@@ -79,7 +79,7 @@ impl<'a> FileManager<'a> {
             println!("Moved {:?} to {:?}", src, dst);
         }
 
-        Ok(())
+        Ok(dest_path)
     }
 
     /// Delete a file or directory.

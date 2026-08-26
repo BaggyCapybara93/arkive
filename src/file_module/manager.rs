@@ -14,9 +14,13 @@ pub struct FileManager<'a> {
 }
 
 impl<'a> FileManager<'a> {
-    pub fn new(file_path: impl Into<PathBuf>, file_dest: impl Into<PathBuf>, settings: &'a Settings) -> Self {
-        FileManager { 
-            file_path: file_path.into(), 
+    pub fn new(
+        file_path: impl Into<PathBuf>,
+        file_dest: impl Into<PathBuf>,
+        settings: &'a Settings,
+    ) -> Self {
+        FileManager {
+            file_path: file_path.into(),
             file_dest: file_dest.into(),
             settings,
         }
@@ -51,7 +55,10 @@ impl<'a> FileManager<'a> {
         bar
     }
 
-    pub(crate) fn maybe_create_progress_bar(len: u64, message: impl Into<String>) -> Option<ProgressBar> {
+    pub(crate) fn maybe_create_progress_bar(
+        len: u64,
+        message: impl Into<String>,
+    ) -> Option<ProgressBar> {
         if len <= 1 {
             None
         } else {

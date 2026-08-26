@@ -2,15 +2,22 @@ use std::fs;
 use std::path::Path;
 
 use crate::file_module::FileManager;
-use crate::metadata_module::{handler::MetadataHandler, MetadataManager};
 use crate::file_module::error::FileManagerError;
+use crate::metadata_module::{MetadataManager, handler::MetadataHandler};
 
-impl<'a> FileManager <'a> {
-    pub(crate) fn metadata_manager_for_destination(&self, _dst: &Path) -> Result<MetadataManager, FileManagerError> {
+impl<'a> FileManager<'a> {
+    pub(crate) fn metadata_manager_for_destination(
+        &self,
+        _dst: &Path,
+    ) -> Result<MetadataManager, FileManagerError> {
         Ok(MetadataManager::new().map_err(|e| FileManagerError::InvalidInput(e.to_string()))?)
     }
 
-    pub(crate) fn save_metadata_for_file(&self, path: &Path, manager: &MetadataManager) -> Result<(), FileManagerError> {
+    pub(crate) fn save_metadata_for_file(
+        &self,
+        path: &Path,
+        manager: &MetadataManager,
+    ) -> Result<(), FileManagerError> {
         if !self.settings.enable_metadata || !path.is_file() {
             return Ok(());
         }
@@ -18,13 +25,18 @@ impl<'a> FileManager <'a> {
         let metadata = MetadataHandler::collect_file(path)
             .map_err(|e| FileManagerError::InvalidInput(format!("Metadata error: {e}")))?;
 
-        manager.update_metadata(metadata)
+        manager
+            .update_metadata(metadata)
             .map_err(|e| FileManagerError::InvalidInput(format!("Metadata error: {e}")))?;
 
         Ok(())
     }
 
-    pub(crate) fn save_metadata_for_directory(&self, dst: &Path, manager: &MetadataManager) -> Result<(), FileManagerError> {
+    pub(crate) fn save_metadata_for_directory(
+        &self,
+        dst: &Path,
+        manager: &MetadataManager,
+    ) -> Result<(), FileManagerError> {
         if !self.settings.enable_metadata {
             return Ok(());
         }
@@ -45,7 +57,10 @@ impl<'a> FileManager <'a> {
     }
 
     /// Capture canonical metadata keys before moving or deleting a path.
-    pub(crate) fn metadata_keys_for_path(&self, path: &Path) -> Result<Vec<std::path::PathBuf>, FileManagerError> {
+    pub(crate) fn metadata_keys_for_path(
+        &self,
+        path: &Path,
+    ) -> Result<Vec<std::path::PathBuf>, FileManagerError> {
         if !self.settings.enable_metadata {
             return Ok(Vec::new());
         }
@@ -60,13 +75,19 @@ impl<'a> FileManager <'a> {
             .into_iter()
             .map(|path| {
                 fs::canonicalize(&path).map_err(|e| {
-                    FileManagerError::InvalidInput(format!("Metadata path error for {:?}: {e}", path))
+                    FileManagerError::InvalidInput(format!(
+                        "Metadata path error for {:?}: {e}",
+                        path
+                    ))
                 })
             })
             .collect()
     }
 
-    pub(crate) fn remove_metadata_by_keys(&self, keys: &[std::path::PathBuf]) -> Result<(), FileManagerError> {
+    pub(crate) fn remove_metadata_by_keys(
+        &self,
+        keys: &[std::path::PathBuf],
+    ) -> Result<(), FileManagerError> {
         if !self.settings.enable_metadata || keys.is_empty() {
             return Ok(());
         }

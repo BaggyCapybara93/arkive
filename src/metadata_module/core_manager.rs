@@ -1,11 +1,11 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
-use sha2::{Digest, Sha256};
 
 use crate::metadata_module::error::MetadataError;
 
@@ -40,14 +40,19 @@ impl CoreMetadataManager {
         let exe_dir = std::env::current_exe()
             .map_err(|e| MetadataError::PathError(format!("Failed to get executable path: {}", e)))?
             .parent()
-            .ok_or_else(|| MetadataError::PathError("Executable has no parent directory".to_string()))?
+            .ok_or_else(|| {
+                MetadataError::PathError("Executable has no parent directory".to_string())
+            })?
             .to_path_buf();
-        
+
         let core_dir = exe_dir.join("core");
         let index_path = core_dir.join("index.json");
         let shards_dir = core_dir.join("shards");
 
-        Ok(Self { index_path, shards_dir })
+        Ok(Self {
+            index_path,
+            shards_dir,
+        })
     }
 
     pub fn canonicalize(&self, path: &Path) -> Result<PathBuf, MetadataError> {
@@ -60,13 +65,17 @@ impl CoreMetadataManager {
             return Ok(GlobalIndex::default());
         }
 
-        let content = fs::read_to_string(&self.index_path).map_err(|e| MetadataError::CorruptIndex(format!("Failed to read index file: {}", e)))?;
-        let index = serde_json::from_str(&content).map_err(|e| MetadataError::CorruptIndex(format!("Failed to parse index file: {}", e)))?;
+        let content = fs::read_to_string(&self.index_path).map_err(|e| {
+            MetadataError::CorruptIndex(format!("Failed to read index file: {}", e))
+        })?;
+        let index = serde_json::from_str(&content).map_err(|e| {
+            MetadataError::CorruptIndex(format!("Failed to parse index file: {}", e))
+        })?;
         Ok(index)
     }
 
     pub fn save_index(&self, index: &GlobalIndex) -> Result<(), MetadataError> {
-        if let Some(parent) = self.index_path.parent(){
+        if let Some(parent) = self.index_path.parent() {
             fs::create_dir_all(parent)?;
         }
         let content = serde_json::to_vec(index)?;
@@ -96,16 +105,20 @@ impl CoreMetadataManager {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let file_name = path.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_else(|| "metadata.tmp".to_string());
+        let file_name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| "metadata.tmp".to_string());
         let temp_name = format!(".{file_name}.tmp.{timestamp}");
-        Ok(path.parent().unwrap_or_else(|| Path::new(".")).join(temp_name))
+        Ok(path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(temp_name))
     }
 
     //Shard Resolution
     pub fn resolve_shard(&self, canonical_path: &Path) -> PathBuf {
-        let parent = canonical_path
-            .parent()
-            .unwrap_or(canonical_path);
+        let parent = canonical_path.parent().unwrap_or(canonical_path);
         let digest = Sha256::digest(parent.to_string_lossy().as_bytes());
         let shard_key = digest
             .iter()
@@ -121,12 +134,14 @@ impl CoreMetadataManager {
     }
 
     //Index Updating
-    pub fn update_index (
-        &self, canonical_path: PathBuf,
+    pub fn update_index(
+        &self,
+        canonical_path: PathBuf,
         shard_path: PathBuf,
     ) -> Result<(), MetadataError> {
         let mut index = self.load_index()?;
         index.map.insert(canonical_path, shard_path);
-        self.save_index(&index).map_err(|e| MetadataError::CorruptIndex(format!("Failed to update index: {}", e)))
+        self.save_index(&index)
+            .map_err(|e| MetadataError::CorruptIndex(format!("Failed to update index: {}", e)))
     }
 }

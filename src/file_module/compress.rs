@@ -4,11 +4,9 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::file_validation::handlers::{
-    valid_directory, validate_compress_path
-};
-use crate::file_module::error::FileManagerError;
 use crate::file_module::add_timestamp_to_path;
+use crate::file_module::error::FileManagerError;
+use crate::file_validation::handlers::{valid_directory, validate_compress_path};
 
 use super::manager::FileManager;
 
@@ -26,25 +24,28 @@ impl FromStr for CompressionMethod {
         match s.to_lowercase().as_str() {
             "gzip" | "gz" => Ok(CompressionMethod::Gzip),
             "zstd" | "zst" => Ok(CompressionMethod::Zstd),
-            _ => Err(format!("Invalid compression method: {}. Use 'gzip' or 'zstd'.", s)),
+            _ => Err(format!(
+                "Invalid compression method: {}. Use 'gzip' or 'zstd'.",
+                s
+            )),
         }
     }
 }
 
 ///Creates the encoder for the specific compression method using the methods sepcificied for said library
-fn create_encoder(method: &CompressionMethod, file: fs::File) -> Result<Box<dyn Write>, FileManagerError> 
-{
+fn create_encoder(
+    method: &CompressionMethod,
+    file: fs::File,
+) -> Result<Box<dyn Write>, FileManagerError> {
     match method {
-        CompressionMethod::Gzip => {
-            Ok(Box::new(flate2::write::GzEncoder::new(
-                file,
-                flate2::Compression::default(),
-            )))
-        }
+        CompressionMethod::Gzip => Ok(Box::new(flate2::write::GzEncoder::new(
+            file,
+            flate2::Compression::default(),
+        ))),
 
         CompressionMethod::Zstd => {
-            let encoder = zstd::Encoder::new(file, 3)
-                .map_err(|e| FileManagerError::Io(e.into()))?;
+            let encoder =
+                zstd::Encoder::new(file, 3).map_err(|e| FileManagerError::Io(e.into()))?;
             Ok(Box::new(encoder.auto_finish()))
         }
     }
@@ -52,7 +53,11 @@ fn create_encoder(method: &CompressionMethod, file: fs::File) -> Result<Box<dyn 
 
 impl<'a> FileManager<'a> {
     /// Compress a file or directory into a tar.gz archive.
-    pub fn compress_path(&self, method: CompressionMethod, add_timestamp: bool) -> Result<(), FileManagerError> {
+    pub fn compress_path(
+        &self,
+        method: CompressionMethod,
+        add_timestamp: bool,
+    ) -> Result<std::path::PathBuf, FileManagerError> {
         let _guard = self.acquire_lock();
         let src = self.file_path.as_path();
         let dst = self.file_dest.as_path();
@@ -63,7 +68,7 @@ impl<'a> FileManager<'a> {
         if src.is_dir() {
             valid_directory(src)?;
         }
-        
+
         // Add timestamp to destination if requested
         let final_dst = if add_timestamp {
             add_timestamp_to_path(dst)?
@@ -78,7 +83,7 @@ impl<'a> FileManager<'a> {
                     src, final_dst, method
                 );
             }
-            return Ok(());
+            return Ok(final_dst);
         }
 
         let file = fs::File::create(&final_dst)?;
@@ -86,16 +91,18 @@ impl<'a> FileManager<'a> {
         let mut tar = tar::Builder::new(encoder);
 
         if src.is_dir() {
-            let src_name = src.file_name()
+            let src_name = src
+                .file_name()
                 .ok_or_else(|| FileManagerError::InvalidInput("Invalid directory name".into()))?;
             tar.append_dir_all(src_name, src)?;
         } else {
-            let name = src.file_name()
+            let name = src
+                .file_name()
                 .ok_or_else(|| FileManagerError::InvalidInput("Invalid file name".into()))?;
             tar.append_path_with_name(src, name)?;
         }
 
         tar.finish()?;
-        Ok(())
+        Ok(final_dst)
     }
 }

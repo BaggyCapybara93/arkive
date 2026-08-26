@@ -4,10 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::metadata_module::{
-    error::MetadataError,
-    structs::Metadata,
-};
+use crate::metadata_module::{error::MetadataError, structs::Metadata};
 
 /// Represents the contents of a single shard file.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -15,7 +12,7 @@ pub struct ShardData {
     pub entries: Vec<Metadata>,
 }
 
-/// Manages a single shard file 
+/// Manages a single shard file
 pub struct LocalMetadataManager {
     shard_path: PathBuf,
 }
@@ -31,8 +28,12 @@ impl LocalMetadataManager {
             return Ok(ShardData::default());
         }
 
-        let data = fs::read_to_string(&self.shard_path).map_err(|e| MetadataError::CorruptShard(format!("Failed to read shard file: {}", e)))?;
-        let shard_data: ShardData = serde_json::from_str(&data).map_err(|e| MetadataError::CorruptShard(format!("Failed to parse shard file: {}", e)))?;
+        let data = fs::read_to_string(&self.shard_path).map_err(|e| {
+            MetadataError::CorruptShard(format!("Failed to read shard file: {}", e))
+        })?;
+        let shard_data: ShardData = serde_json::from_str(&data).map_err(|e| {
+            MetadataError::CorruptShard(format!("Failed to parse shard file: {}", e))
+        })?;
         Ok(shard_data)
     }
 
@@ -75,27 +76,42 @@ impl LocalMetadataManager {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let file_name = path.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_else(|| "shard.tmp".to_string());
+        let file_name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| "shard.tmp".to_string());
         let temp_name = format!(".{file_name}.tmp.{timestamp}");
-        Ok(path.parent().unwrap_or_else(|| Path::new(".")).join(temp_name))
+        Ok(path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(temp_name))
     }
 
     ///Operations
     pub fn upsert(&self, metadata: Metadata) -> Result<(), MetadataError> {
         let mut shard = self.load()?;
 
-        if let Some(existing) = shard.entries.iter_mut().find(|e| e.file_path == metadata.file_path) {
+        if let Some(existing) = shard
+            .entries
+            .iter_mut()
+            .find(|e| e.file_path == metadata.file_path)
+        {
             *existing = metadata;
         } else {
             shard.entries.push(metadata);
         }
 
-        self.save(&shard).map_err(|e| MetadataError::CorruptShard(format!("Failed to save shard after upsert: {}", e)))
+        self.save(&shard).map_err(|e| {
+            MetadataError::CorruptShard(format!("Failed to save shard after upsert: {}", e))
+        })
     }
 
     pub fn get(&self, canonical_path: &Path) -> Result<Option<Metadata>, MetadataError> {
         let shard = self.load()?;
-        Ok(shard.entries.into_iter().find(|e| e.file_path == canonical_path))
+        Ok(shard
+            .entries
+            .into_iter()
+            .find(|e| e.file_path == canonical_path))
     }
 
     pub fn remove(&self, canonical_path: &Path) -> Result<bool, MetadataError> {
@@ -107,7 +123,9 @@ impl LocalMetadataManager {
         let removed = shard.entries.len() != before;
 
         if removed {
-            self.save(&shard).map_err(|e| MetadataError::CorruptShard(format!("Failed to save shard after remove: {}", e)))?;
+            self.save(&shard).map_err(|e| {
+                MetadataError::CorruptShard(format!("Failed to save shard after remove: {}", e))
+            })?;
         }
 
         Ok(removed)

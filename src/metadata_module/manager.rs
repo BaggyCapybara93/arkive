@@ -1,10 +1,8 @@
 use std::path::Path;
 
 use crate::metadata_module::{
-    core_manager::CoreMetadataManager,
-    local_manager::LocalMetadataManager,
+    core_manager::CoreMetadataManager, error::MetadataError, local_manager::LocalMetadataManager,
     structs::Metadata,
-    error::MetadataError,
 };
 
 pub struct MetadataManager {
@@ -29,7 +27,10 @@ impl MetadataManager {
             ..metadata
         })?;
 
-        if let Err(err) = self.core.update_index(canonical.clone(), shard_path.clone()) {
+        if let Err(err) = self
+            .core
+            .update_index(canonical.clone(), shard_path.clone())
+        {
             local.save(&previous_shard)?;
             return Err(err);
         }
@@ -68,7 +69,9 @@ impl MetadataManager {
         if removed {
             let mut index = self.core.load_index()?;
             index.map.remove(&canonical);
-            self.core.save_index(&index).map_err(|e| MetadataError::CorruptIndex(format!("Failed to save index after removal: {}", e)))?;
+            self.core.save_index(&index).map_err(|e| {
+                MetadataError::CorruptIndex(format!("Failed to save index after removal: {}", e))
+            })?;
         }
 
         Ok(removed)

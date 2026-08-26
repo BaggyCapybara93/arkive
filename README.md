@@ -17,6 +17,7 @@ files and directories.
 - Move removed files into Arkive's trash directory
 - Find and remove duplicate files
 - Find unused files and empty directories
+- Create portable backups that can be deployed to their original locations
 
 ## Installation
 
@@ -64,6 +65,7 @@ copy the directory tree and then remove the source.
 ```bash
 arkive move file1.txt backup/
 arkive move --recursive myproject/ backup/myproject/
+arkive move file1.txt backup/file1.txt --metadata
 arkive --dry-run move --recursive myproject/ backup/myproject/
 ```
 
@@ -79,6 +81,7 @@ verified by comparing the source and destination SHA-256 hashes.
 ```bash
 arkive copy file1.txt backup/
 arkive copy --recursive myproject/ backup/myproject/
+arkive copy --recursive myproject/ backup/myproject/ --metadata
 ```
 
 Timestamped destination names are controlled by the `use_timestamp` config
@@ -97,10 +100,35 @@ from its config.
 ```bash
 arkive compress data/ backup/data.tar.gz
 arkive compress --method zstd data/ backup/data.tar.zst
+arkive compress data/ backup/data.tar.gz --metadata
 ```
 
 Timestamped destination names are controlled by the `use_timestamp` config
 setting; there is currently no `--timestamp` option on this command.
+
+### Deploy a backup
+
+Pass `--metadata` to `copy`, `move`, or `compress` to create a portable
+`<backup>.arkive.json` sidecar. Keep this file beside the backup when moving it
+to another machine. Deploy restores the backup to its recorded original path:
+
+```bash
+arkive compress test test.tar.gz --metadata
+rm -rf test
+arkive deploy test.tar.gz
+```
+
+Use `--destination` when the original absolute path is not suitable on the
+current machine. Arkive refuses to overwrite an existing destination unless
+`--force` is supplied.
+
+```bash
+arkive deploy test.tar.gz --destination /srv/restored/test
+arkive deploy test.tar.gz --force
+```
+
+Deployment copies regular and directory backups, so the backup remains intact.
+Gzip and Zstandard archives are extracted according to their saved metadata.
 
 ### Rename
 

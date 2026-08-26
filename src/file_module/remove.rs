@@ -1,8 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::file_module::error::FileManagerError;
 use crate::file_module::FileManager;
+use crate::file_module::error::FileManagerError;
 
 /// Options for file removal
 #[derive(Debug)]

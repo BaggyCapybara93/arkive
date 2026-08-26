@@ -6,15 +6,15 @@ pub enum ConfigError {
     /// Failed to determine config path
     #[error("Failed to determine config path: {0}")]
     PathError(std::io::Error),
-    
+
     /// Failed to read config file
     #[error("Failed to read config file: {0}")]
     ReadError(std::io::Error),
-    
+
     /// Failed to parse config file as JSON
     #[error("Failed to parse config file: {0}")]
     ParseError(#[from] serde_json::Error),
-    
+
     /// Failed to write config file
     #[error("Failed to write config file: {0}")]
     WriteError(std::io::Error),

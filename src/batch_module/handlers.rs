@@ -1,12 +1,12 @@
-use std::sync::Arc;
-use serde_json;
 use crate::settings::Settings;
+use serde_json;
 use std::fs;
+use std::sync::Arc;
 
-use crate::batch_module::{Job, BatchError};
+use crate::batch_module::file::BatchFile;
 use crate::batch_module::job::BatchCompressionMethod;
 use crate::batch_module::thread_pool::ThreadPool;
-use crate::batch_module::file::BatchFile;
+use crate::batch_module::{BatchError, Job};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 
@@ -26,10 +26,13 @@ pub struct BatchHandler {
 impl BatchHandler {
     pub fn new(commands: Vec<Job>, settings: &Settings) -> Self {
         let settings = Arc::new(settings.clone());
-        let commands = commands.into_iter().map(|mut job| {
-            job.settings = Some(settings.clone());
-            job
-        }).collect();
+        let commands = commands
+            .into_iter()
+            .map(|mut job| {
+                job.settings = Some(settings.clone());
+                job
+            })
+            .collect();
         BatchHandler { commands }
     }
 
@@ -37,7 +40,8 @@ impl BatchHandler {
         let batch_content = fs::read_to_string(path)?;
         // Try parsing as BatchFile first (new format with "operations" key)
         if let Ok(batch) = serde_json::from_str::<BatchFile>(&batch_content) {
-            let commands = batch.operations
+            let commands = batch
+                .operations
                 .into_iter()
                 .map(|mut job| {
                     job.settings = Some(Arc::new(settings.clone()));
@@ -52,7 +56,9 @@ impl BatchHandler {
     }
 
     pub fn run(&self) -> Result<(), BatchError> {
-        let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        let threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
 
         // MultiProgress coordinates the draw target so multiple bars (this one,
         // plus any per-file bar elsewhere in the pipeline) render as stacked
@@ -64,11 +70,9 @@ impl BatchHandler {
             bar.set_draw_target(ProgressDrawTarget::stderr());
             bar.set_message("Running batch jobs");
             bar.set_style(
-                ProgressStyle::with_template(
-                    "{msg} [{bar:40.cyan/blue}] {pos}/{len}"
-                )
-                .unwrap()
-                .progress_chars("=>-"),
+                ProgressStyle::with_template("{msg} [{bar:40.cyan/blue}] {pos}/{len}")
+                    .unwrap()
+                    .progress_chars("=>-"),
             );
             Some(bar)
         } else {

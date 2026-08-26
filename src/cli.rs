@@ -1,18 +1,16 @@
-use clap::{Parser, Subcommand, value_parser};
-use std::path::{Path, PathBuf};
 use crate::batch_module::BatchHandler;
 use crate::error::AppError;
-use crate::file_module::cleanup;
-use crate::file_module::remove;
 use crate::file_module::FileManager;
-use crate::settings::Settings;
+use crate::file_module::cleanup;
 use crate::file_module::compress::CompressionMethod;
+use crate::file_module::deploy::{self, BackupKind};
+use crate::file_module::remove;
+use crate::settings::Settings;
+use clap::{Parser, Subcommand, value_parser};
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
-#[command(
-        name = "arkive", 
-        about = "A simple file management tool"
-)]
+#[command(name = "arkive", about = "A simple file management tool")]
 
 pub struct CLI {
     #[arg(long, help = "Disable trash, permanently delete files")]
@@ -42,6 +40,10 @@ pub enum Command {
         dest: PathBuf,
         #[arg(long, help = "Move directories recursively")]
         recursive: bool,
+
+        /// Save portable metadata so this backup can be deployed later
+        #[arg(long)]
+        metadata: bool,
     },
 
     /// Copy a file or directory
@@ -54,18 +56,40 @@ pub enum Command {
 
         #[arg(long, help = "Copy directories recursively")]
         recursive: bool,
+
+        /// Save portable metadata so this backup can be deployed later
+        #[arg(long)]
+        metadata: bool,
     },
 
     /// Compress a file or directory into a tar.gz archive
     Compress {
         /// Source path
         src: PathBuf,
-        
+
         /// Destination path
         dest: PathBuf,
 
         #[arg(long, help = "Compression method (gzip or zstd)", value_parser = value_parser!(CompressionMethod))]
         method: Option<CompressionMethod>,
+
+        /// Save portable metadata so this archive can be deployed later
+        #[arg(long)]
+        metadata: bool,
+    },
+
+    /// Restore a backup to its recorded original path
+    Deploy {
+        /// Copied path, moved path, or compressed archive to restore
+        backup: PathBuf,
+
+        /// Restore somewhere other than the recorded original path
+        #[arg(long)]
+        destination: Option<PathBuf>,
+
+        /// Replace an existing destination
+        #[arg(long)]
+        force: bool,
     },
 
     /// Rename a file or directory, or rename matching files/folders in a directory
@@ -147,35 +171,74 @@ pub enum Command {
     },
 }
 
-fn handle_move(src: &Path, dest: &Path, recursive: bool, settings: &Settings) ->  Result<(), AppError> {
+fn handle_move(
+    src: &Path,
+    dest: &Path,
+    recursive: bool,
+    metadata: bool,
+    settings: &Settings,
+) -> Result<(), AppError> {
+    let original = std::fs::canonicalize(src)?;
     let fm = FileManager::new(src, dest, settings);
-    if recursive {
-        fm.copy_path(true, settings.use_timestamp)?;
+    let backup = if recursive {
+        let backup = fm.copy_path(true, settings.use_timestamp)?;
         fm.delete_path(src, true, false)?;
+        backup
     } else {
-        fm.move_path()?;
+        fm.move_path()?
+    };
+    if metadata && !settings.dry_run {
+        deploy::save_manifest(&original, &backup, BackupKind::Move, None)?;
     }
     Ok(())
 }
 
-fn handle_copy(src: &Path, dest: &Path, recursive: bool, settings: &Settings) -> Result<(), AppError> {
+fn handle_copy(
+    src: &Path,
+    dest: &Path,
+    recursive: bool,
+    metadata: bool,
+    settings: &Settings,
+) -> Result<(), AppError> {
+    let original = std::fs::canonicalize(src)?;
     let fm = FileManager::new(src, dest, settings);
-    if recursive {
-        fm.copy_path(true, settings.use_timestamp)?;
-    } else {
-        fm.copy_path(false, settings.use_timestamp)?;
+    let backup = fm.copy_path(recursive, settings.use_timestamp)?;
+    if metadata && !settings.dry_run {
+        deploy::save_manifest(&original, &backup, BackupKind::Copy, None)?;
     }
     Ok(())
 }
 
-fn handle_compress(src: &Path, dest: &Path, method: Option<CompressionMethod>, settings: &Settings) -> Result<(), AppError> {
+fn handle_compress(
+    src: &Path,
+    dest: &Path,
+    method: Option<CompressionMethod>,
+    metadata: bool,
+    settings: &Settings,
+) -> Result<(), AppError> {
+    let original = std::fs::canonicalize(src)?;
     let fm = FileManager::new(src, dest, settings);
     let compression_method = method.unwrap_or(settings.compression_method);
-    fm.compress_path(compression_method, settings.use_timestamp)?;
+    let backup = fm.compress_path(compression_method, settings.use_timestamp)?;
+    if metadata && !settings.dry_run {
+        deploy::save_manifest(
+            &original,
+            &backup,
+            BackupKind::Compress,
+            Some(compression_method),
+        )?;
+    }
     Ok(())
 }
 
-fn handle_rename(src: &Path, new_name: Option<&Path>, pattern: Option<&str>, extension: Option<&str>, recursive: bool, settings: &Settings) -> Result<(), AppError> {
+fn handle_rename(
+    src: &Path,
+    new_name: Option<&Path>,
+    pattern: Option<&str>,
+    extension: Option<&str>,
+    recursive: bool,
+    settings: &Settings,
+) -> Result<(), AppError> {
     if let Some(dest) = new_name {
         if pattern.is_some() || extension.is_some() {
             let fm = FileManager::new(src, "", settings);
@@ -198,8 +261,12 @@ fn handle_rename(src: &Path, new_name: Option<&Path>, pattern: Option<&str>, ext
 }
 
 fn handle_batch(file: &Path, settings: &Settings) -> Result<(), AppError> {
-    let file_str = file.to_str()
-        .ok_or_else(|| AppError::InvalidInput(format!("Batch file path contains invalid UTF‑8: {:?}", file)))?;
+    let file_str = file.to_str().ok_or_else(|| {
+        AppError::InvalidInput(format!(
+            "Batch file path contains invalid UTF‑8: {:?}",
+            file
+        ))
+    })?;
 
     let batch_handler = BatchHandler::from_file(file_str, settings)?;
     batch_handler.run()?;
@@ -212,14 +279,24 @@ fn handle_deduplicate(path: &Path, to_trash: bool, settings: &Settings) -> Resul
     Ok(())
 }
 
-fn handle_cleanup(path: Option<&Path>, options: cleanup::CleanupOptions, settings: &Settings) -> Result<(), AppError> {
+fn handle_cleanup(
+    path: Option<&Path>,
+    options: cleanup::CleanupOptions,
+    settings: &Settings,
+) -> Result<(), AppError> {
     let path = path.map_or(Path::new("."), |p| p);
     let fm = FileManager::new(path, "", settings);
     fm.cleanup(options)?;
     Ok(())
 }
 
-fn handle_remove(path: &Path, pattern: &str, extension: Option<&str>, trash: bool, settings: &Settings) -> Result<(), AppError> {
+fn handle_remove(
+    path: &Path,
+    pattern: &str,
+    extension: Option<&str>,
+    trash: bool,
+    settings: &Settings,
+) -> Result<(), AppError> {
     let fm = FileManager::new(path, "", settings);
     let options = remove::RemoveOptions {
         trash,
@@ -242,17 +319,57 @@ fn handle_list_trash(settings: &Settings) -> Result<(), AppError> {
 
 pub fn cli_handler(cmd: Command, settings: &Settings) -> Result<(), AppError> {
     match cmd {
-        Command::Move { src, dest, recursive } => handle_move(&src, &dest, recursive, settings),
-        Command::Copy { src, dest, recursive } => handle_copy(&src, &dest, recursive, settings),
-        Command::Compress { src, dest, method } => handle_compress(&src, &dest, method, settings),
-        Command::Rename { name, new_name, pattern, extension, recursive } => {
-            handle_rename(&name, new_name.as_deref(), pattern.as_deref(), extension.as_deref(), recursive, settings)
+        Command::Move {
+            src,
+            dest,
+            recursive,
+            metadata,
+        } => handle_move(&src, &dest, recursive, metadata, settings),
+        Command::Copy {
+            src,
+            dest,
+            recursive,
+            metadata,
+        } => handle_copy(&src, &dest, recursive, metadata, settings),
+        Command::Compress {
+            src,
+            dest,
+            method,
+            metadata,
+        } => handle_compress(&src, &dest, method, metadata, settings),
+        Command::Deploy {
+            backup,
+            destination,
+            force,
+        } => {
+            deploy::deploy(&backup, destination.as_deref(), force, settings)?;
+            Ok(())
         }
+        Command::Rename {
+            name,
+            new_name,
+            pattern,
+            extension,
+            recursive,
+        } => handle_rename(
+            &name,
+            new_name.as_deref(),
+            pattern.as_deref(),
+            extension.as_deref(),
+            recursive,
+            settings,
+        ),
         Command::Batch { file } => handle_batch(&file, settings),
         Command::EmptyTrash => handle_empty_trash(settings),
         Command::ListTrash => handle_list_trash(settings),
         Command::Deduplicate { path, trash } => handle_deduplicate(&path, trash, settings),
-        Command::Cleanup { path, empty_trash, deduplicate, scan_unused, scan_empty_dirs } => {
+        Command::Cleanup {
+            path,
+            empty_trash,
+            deduplicate,
+            scan_unused,
+            scan_empty_dirs,
+        } => {
             let options = cleanup::CleanupOptions {
                 empty_trash,
                 deduplicate,
@@ -261,6 +378,11 @@ pub fn cli_handler(cmd: Command, settings: &Settings) -> Result<(), AppError> {
             };
             handle_cleanup(path.as_deref(), options, settings)
         }
-        Command::Remove { path, pattern, extension, trash } => handle_remove(&path, &pattern, extension.as_deref(), trash, settings),
+        Command::Remove {
+            path,
+            pattern,
+            extension,
+            trash,
+        } => handle_remove(&path, &pattern, extension.as_deref(), trash, settings),
     }
 }

@@ -1,27 +1,27 @@
-use std::path::{Path};
-use std::ffi::OsStr;
-use std::fs::{self, File, OpenOptions};
 use crate::file_module::FileManagerError;
 use crate::file_validation::hash::hash_file;
+use std::ffi::OsStr;
+use std::fs::{self, File, OpenOptions};
+use std::path::Path;
 
 pub fn sanitize_file_name(file_name: &OsStr) -> String {
     // Check for path traversal attempts
     if file_name.to_string_lossy().contains("..") {
         return String::new();
     }
-    
+
     // Get the file name as a string
     let name = file_name.to_string_lossy();
-    
+
     // Return empty if the name is empty or contains only path separators
     if name.is_empty() || name == "/" || name == "\\" {
         return String::new();
     }
-    
+
     name.to_string()
 }
 
-pub fn ensure_not_nested(src: &Path, dst: &Path) -> Result<(), FileManagerError>{
+pub fn ensure_not_nested(src: &Path, dst: &Path) -> Result<(), FileManagerError> {
     let src = src.canonicalize()?;
     let dst = match dst.canonicalize() {
         Ok(path) => path,
@@ -29,9 +29,10 @@ pub fn ensure_not_nested(src: &Path, dst: &Path) -> Result<(), FileManagerError>
     };
 
     if dst.starts_with(&src) {
-        return Err(FileManagerError::InvalidInput(
-            format!("Destination {:?} cannot be inside source {:?}", dst, src)
-        ));
+        return Err(FileManagerError::InvalidInput(format!(
+            "Destination {:?} cannot be inside source {:?}",
+            dst, src
+        )));
     }
 
     Ok(())
@@ -40,20 +41,19 @@ pub fn ensure_not_nested(src: &Path, dst: &Path) -> Result<(), FileManagerError>
 // Validates that the path can be accessed
 pub fn validate_access_permissions(path: &Path) -> Result<(), FileManagerError> {
     // Canonicalize
-    let canon = path.canonicalize().map_err(|err| {
-        match err.kind() {
-            std::io::ErrorKind::PermissionDenied =>
-                FileManagerError::PermissionDenied(format!("Cannot access {:?}: {err}", path)),
-            _ =>
-                FileManagerError::InvalidDirectory(format!("Invalid path {:?}: {err}", path)),
+    let canon = path.canonicalize().map_err(|err| match err.kind() {
+        std::io::ErrorKind::PermissionDenied => {
+            FileManagerError::PermissionDenied(format!("Cannot access {:?}: {err}", path))
         }
+        _ => FileManagerError::InvalidDirectory(format!("Invalid path {:?}: {err}", path)),
     })?;
 
-    // Reject symlinks 
+    // Reject symlinks
     let meta = fs::symlink_metadata(&canon)?;
     if meta.file_type().is_symlink() {
         return Err(FileManagerError::PermissionDenied(format!(
-            "Symlink not allowed: {:?}", canon
+            "Symlink not allowed: {:?}",
+            canon
         )));
     }
 
@@ -61,13 +61,15 @@ pub fn validate_access_permissions(path: &Path) -> Result<(), FileManagerError> 
     if meta.is_dir() {
         if fs::read_dir(&canon).is_err() {
             return Err(FileManagerError::PermissionDenied(format!(
-                "Cannot read directory {:?}", canon
+                "Cannot read directory {:?}",
+                canon
             )));
         }
     } else {
         if File::open(&canon).is_err() {
             return Err(FileManagerError::PermissionDenied(format!(
-                "Cannot read file {:?}", canon
+                "Cannot read file {:?}",
+                canon
             )));
         }
     }
@@ -76,7 +78,8 @@ pub fn validate_access_permissions(path: &Path) -> Result<(), FileManagerError> 
     if meta.is_file() {
         if OpenOptions::new().write(true).open(&canon).is_err() {
             return Err(FileManagerError::PermissionDenied(format!(
-                "Cannot write to {:?}", canon
+                "Cannot write to {:?}",
+                canon
             )));
         }
     }
@@ -87,7 +90,8 @@ pub fn validate_access_permissions(path: &Path) -> Result<(), FileManagerError> 
         if let Some(parent) = canon.parent() {
             if OpenOptions::new().write(true).open(parent).is_err() {
                 return Err(FileManagerError::PermissionDenied(format!(
-                    "Cannot delete {:?} (parent not writable)", canon
+                    "Cannot delete {:?} (parent not writable)",
+                    canon
                 )));
             }
         }
@@ -96,20 +100,21 @@ pub fn validate_access_permissions(path: &Path) -> Result<(), FileManagerError> 
     Ok(())
 }
 
-
 // Validates that the path is a directory and accessible
 pub fn valid_directory(path: &Path) -> Result<(), FileManagerError> {
     validate_access_permissions(path)?;
 
     if !path.exists() {
         return Err(FileManagerError::InvalidDirectory(format!(
-            "Directory {:?} does not exist", path
+            "Directory {:?} does not exist",
+            path
         )));
     }
 
     if !path.is_dir() {
         return Err(FileManagerError::InvalidDirectory(format!(
-            "Path {:?} is not a directory", path
+            "Path {:?} is not a directory",
+            path
         )));
     }
 
@@ -141,7 +146,8 @@ pub fn validate_compress_path(dst: &Path) -> Result<(), FileManagerError> {
 
     if !valid_extensions.iter().any(|ext| dst_str.ends_with(ext)) {
         return Err(FileManagerError::InvalidInput(format!(
-            "Destination {:?} must have a valid compression extension: {:?}", dst, valid_extensions
+            "Destination {:?} must have a valid compression extension: {:?}",
+            dst, valid_extensions
         )));
     }
 

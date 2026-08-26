@@ -1,8 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::file_module::error::FileManagerError;
 use crate::file_module::FileManager;
+use crate::file_module::error::FileManagerError;
 
 impl<'a> FileManager<'a> {
     /// Rename a file or directory to the destination.
@@ -48,11 +48,17 @@ impl<'a> FileManager<'a> {
         let root = self.file_path.as_path();
 
         if !root.exists() {
-            return Err(FileManagerError::InvalidDirectory(format!("Path does not exist: {:?}", root)));
+            return Err(FileManagerError::InvalidDirectory(format!(
+                "Path does not exist: {:?}",
+                root
+            )));
         }
 
         if !root.is_dir() {
-            return Err(FileManagerError::InvalidDirectory(format!("Path is not a directory: {:?}", root)));
+            return Err(FileManagerError::InvalidDirectory(format!(
+                "Path is not a directory: {:?}",
+                root
+            )));
         }
 
         let mut matched_paths = Vec::new();
@@ -69,9 +75,12 @@ impl<'a> FileManager<'a> {
         matched_paths.sort();
 
         for path in matched_paths {
-            let file_name = path.file_name()
+            let file_name = path
+                .file_name()
                 .and_then(|name| name.to_str())
-                .ok_or_else(|| FileManagerError::InvalidInput(format!("Invalid file name: {:?}", path)))?;
+                .ok_or_else(|| {
+                    FileManagerError::InvalidInput(format!("Invalid file name: {:?}", path))
+                })?;
 
             let new_name = Self::build_renamed_name(file_name, template)?;
             let new_path = path.parent().unwrap_or(root).join(&new_name);
@@ -88,7 +97,10 @@ impl<'a> FileManager<'a> {
             }
 
             if new_path.exists() {
-                return Err(FileManagerError::InvalidInput(format!("Target already exists: {:?}", new_path)));
+                return Err(FileManagerError::InvalidInput(format!(
+                    "Target already exists: {:?}",
+                    new_path
+                )));
             }
 
             let source_metadata_keys = self.metadata_keys_for_path(&path)?;
@@ -123,7 +135,11 @@ impl<'a> FileManager<'a> {
         Ok(())
     }
 
-    fn matches_rename_target(file_name: &str, pattern: Option<&str>, extension: Option<&str>) -> Result<bool, FileManagerError> {
+    fn matches_rename_target(
+        file_name: &str,
+        pattern: Option<&str>,
+        extension: Option<&str>,
+    ) -> Result<bool, FileManagerError> {
         if let Some(pattern_value) = pattern {
             return Ok(Self::matches_rename_pattern(file_name, pattern_value));
         }
@@ -142,7 +158,9 @@ impl<'a> FileManager<'a> {
 
     fn matches_rename_pattern(file_name: &str, pattern: &str) -> bool {
         let regex_pattern = Self::rename_glob_to_regex(pattern);
-        regex::Regex::new(&regex_pattern).map(|regex| regex.is_match(file_name)).unwrap_or(false)
+        regex::Regex::new(&regex_pattern)
+            .map(|regex| regex.is_match(file_name))
+            .unwrap_or(false)
     }
 
     fn rename_glob_to_regex(pattern: &str) -> String {
@@ -169,8 +187,16 @@ impl<'a> FileManager<'a> {
 
     fn build_renamed_name(file_name: &str, template: &str) -> Result<String, FileManagerError> {
         let path = Path::new(file_name);
-        let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
-        let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or_default().to_string();
+        let stem = path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let extension = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or_default()
+            .to_string();
         let mut result = template.to_string();
 
         result = result.replace("{name}", &stem);
@@ -193,7 +219,10 @@ mod tests {
     #[test]
     fn pattern_matching_supports_globs() {
         assert!(FileManager::matches_rename_pattern("notes.txt", "*.txt"));
-        assert!(FileManager::matches_rename_pattern("archive.tar.gz", "*.gz"));
+        assert!(FileManager::matches_rename_pattern(
+            "archive.tar.gz",
+            "*.gz"
+        ));
         assert!(!FileManager::matches_rename_pattern("notes.txt", "*.md"));
     }
 

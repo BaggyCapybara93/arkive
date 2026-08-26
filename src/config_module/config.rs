@@ -1,7 +1,6 @@
-
-use serde::{Deserialize, Serialize};
-use chrono::{DateTime, Utc};
 use crate::file_module::compress::CompressionMethod;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 /// Configuration for long-term storage of settings.
 /// This is separate from Settings which holds mostly short-term CLI settings.
@@ -10,15 +9,15 @@ pub struct Config {
     /// Enable trash by default when deleting files
     #[serde(default = "default_true")]
     pub enable_trash: bool,
-    
+
     /// Enable verbose output by default
     #[serde(default)]
     pub verbose: bool,
-    
+
     /// Enable dry-run mode by default
     #[serde(default)]
     pub dry_run: bool,
-    
+
     /// Enable recursive operations by default
     #[serde(default)]
     pub recursive: bool,
@@ -26,19 +25,19 @@ pub struct Config {
     /// Enable metadata tracking when moving or copying files
     #[serde(default)]
     pub enable_metadata: bool,
-    
+
     /// Default compression method for archive operations
     #[serde(default = "default_gzip")]
     pub compression_method: CompressionMethod,
-    
+
     /// Enable timestamp prefix for copy and compression operations
     #[serde(default)]
     pub use_timestamp: bool,
-    
+
     /// Timestamp when config was created (ISO 8601 format)
     #[serde(with = "chrono::serde::ts_seconds")]
     pub created_at: DateTime<Utc>,
-    
+
     /// Timestamp when config was last updated (ISO 8601 format)
     #[serde(with = "chrono::serde::ts_seconds")]
     pub updated_at: DateTime<Utc>,
