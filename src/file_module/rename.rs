@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::file_module::FileManager;
 use crate::file_module::error::FileManagerError;
@@ -46,7 +46,17 @@ impl<'a> FileManager<'a> {
     ) -> Result<(), FileManagerError> {
         let _guard = self.acquire_lock();
         let root = self.file_path.as_path();
+        self.rename_matching_items_unlocked(root, pattern, extension, recursive, template)
+    }
 
+    fn rename_matching_items_unlocked(
+        &self,
+        root: &Path,
+        pattern: Option<&str>,
+        extension: Option<&str>,
+        recursive: bool,
+        template: &str,
+    ) -> Result<(), FileManagerError> {
         if !root.exists() {
             return Err(FileManagerError::InvalidDirectory(format!(
                 "Path does not exist: {:?}",
@@ -126,8 +136,7 @@ impl<'a> FileManager<'a> {
                 let entry = entry?;
                 let path = entry.path();
                 if path.is_dir() {
-                    let child = FileManager::new(&path, PathBuf::new(), self.settings);
-                    child.rename_matching_items(pattern, extension, true, template)?;
+                    self.rename_matching_items_unlocked(&path, pattern, extension, true, template)?;
                 }
             }
         }

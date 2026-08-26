@@ -89,9 +89,18 @@ impl<'a> FileManager<'a> {
         recursive: bool,
         to_trash: bool,
     ) -> Result<(), FileManagerError> {
-        let _guard = self.acquire_lock();
         let src = path.into();
         let src_path = src.as_path();
+        let trash_path = if to_trash && self.settings.enable_trash {
+            Some(Self::trash_path()?)
+        } else {
+            None
+        };
+        let _guard = if let Some(trash) = trash_path.as_deref() {
+            Self::acquire_paths([src_path, trash])
+        } else {
+            Self::acquire_paths([src_path])
+        };
 
         if src_path.is_dir() {
             valid_directory(src_path)?;

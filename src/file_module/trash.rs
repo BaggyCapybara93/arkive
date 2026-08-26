@@ -7,7 +7,7 @@ use crate::file_module::error::FileManagerError;
 use crate::settings::Settings;
 
 impl<'a> FileManager<'a> {
-    fn trash_path() -> Result<PathBuf, FileManagerError> {
+    pub(crate) fn trash_path() -> Result<PathBuf, FileManagerError> {
         Ok(if let Some(home) = std::env::var_os("HOME") {
             PathBuf::from(home).join("arkive_trash")
         } else {
@@ -71,6 +71,8 @@ impl<'a> FileManager<'a> {
     }
 
     pub fn empty_trash(settings: &Settings) -> Result<(), FileManagerError> {
+        let lock_path = Self::trash_path()?;
+        let _guard = Self::acquire_paths([lock_path.as_path()]);
         let trash = if settings.dry_run {
             let trash = Self::trash_path()?;
             if !trash.exists() {
@@ -129,6 +131,8 @@ impl<'a> FileManager<'a> {
     }
 
     pub fn list_trash(_settings: &Settings) -> Result<(), FileManagerError> {
+        let lock_path = Self::trash_path()?;
+        let _guard = Self::acquire_paths([lock_path.as_path()]);
         let trash = Self::trash_dir()?;
 
         for entry in std::fs::read_dir(trash)? {

@@ -1,3 +1,4 @@
+use parking_lot::Mutex;
 use std::path::Path;
 
 use crate::metadata_module::{
@@ -9,6 +10,10 @@ pub struct MetadataManager {
     core: CoreMetadataManager,
 }
 
+// File operations can run concurrently, but the metadata index is a shared
+// read-modify-write resource and needs its own short-lived critical section.
+static METADATA_LOCK: Mutex<()> = Mutex::new(());
+
 impl MetadataManager {
     pub fn new() -> Result<Self, MetadataError> {
         let core = CoreMetadataManager::new()?;
@@ -16,6 +21,7 @@ impl MetadataManager {
     }
 
     pub fn update_metadata(&self, metadata: Metadata) -> Result<(), MetadataError> {
+        let _guard = METADATA_LOCK.lock();
         let canonical = self.core.canonicalize(&metadata.file_path)?;
 
         let shard_path = self.core.resolve_shard(&canonical);
@@ -39,6 +45,7 @@ impl MetadataManager {
     }
 
     pub fn find_metadata(&self, path: &Path) -> Result<Option<Metadata>, MetadataError> {
+        let _guard = METADATA_LOCK.lock();
         let canonical = self.core.canonicalize(path)?;
 
         let shard_path = match self.core.lookup_shard(&canonical)? {
@@ -53,6 +60,7 @@ impl MetadataManager {
     /// Remove an entry by a canonical path captured before a file operation.
     /// This also works after the file has been moved or deleted.
     pub fn remove_metadata_by_key(&self, canonical_path: &Path) -> Result<bool, MetadataError> {
+        let _guard = METADATA_LOCK.lock();
         let canonical = canonical_path.to_path_buf();
 
         // 1. Look up shard

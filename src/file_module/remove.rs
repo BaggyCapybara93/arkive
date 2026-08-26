@@ -20,8 +20,17 @@ impl<'a> FileManager<'a> {
         extension: Option<&str>,
         options: RemoveOptions,
     ) -> Result<(), FileManagerError> {
-        let _guard = self.acquire_lock();
         let src = self.file_path.as_path();
+        let trash_path = if options.trash && self.settings.enable_trash {
+            Some(Self::trash_path()?)
+        } else {
+            None
+        };
+        let _guard = if let Some(trash) = trash_path.as_deref() {
+            Self::acquire_paths([src, trash])
+        } else {
+            Self::acquire_paths([src])
+        };
 
         if !src.is_dir() {
             return Err(FileManagerError::InvalidInput(
