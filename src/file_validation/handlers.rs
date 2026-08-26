@@ -1,4 +1,5 @@
 use crate::file_module::FileManagerError;
+use crate::file_module::compress::CompressionMethod;
 use crate::file_validation::hash::hash_file;
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
@@ -138,8 +139,14 @@ pub fn validate_hash(src: &Path, dst: &Path) -> Result<(), FileManagerError> {
 }
 
 // Validates destination is a valid extension for compression
-pub fn validate_compress_path(dst: &Path) -> Result<(), FileManagerError> {
-    let valid_extensions = ["tar.gz", "tgz"]; // Change this to be configurable in the future
+pub fn validate_compress_path(
+    dst: &Path,
+    method: CompressionMethod,
+) -> Result<(), FileManagerError> {
+    let valid_extensions: &[&str] = match method {
+        CompressionMethod::Gzip => &[".tar.gz", ".tgz"],
+        CompressionMethod::Zstd => &[".tar.zst", ".tzst"],
+    };
     let dst_str = dst.to_str().ok_or(FileManagerError::InvalidInput(
         "Destination path is not valid UTF‑8".into(),
     ))?;
@@ -152,4 +159,30 @@ pub fn validate_compress_path(dst: &Path) -> Result<(), FileManagerError> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_compress_path;
+    use crate::file_module::compress::CompressionMethod;
+    use std::path::Path;
+
+    #[test]
+    fn compression_extensions_match_the_selected_encoder() {
+        assert!(
+            validate_compress_path(Path::new("backup.tar.gz"), CompressionMethod::Gzip).is_ok()
+        );
+        assert!(validate_compress_path(Path::new("backup.tgz"), CompressionMethod::Gzip).is_ok());
+        assert!(
+            validate_compress_path(Path::new("backup.tar.zst"), CompressionMethod::Zstd).is_ok()
+        );
+        assert!(validate_compress_path(Path::new("backup.tzst"), CompressionMethod::Zstd).is_ok());
+
+        assert!(
+            validate_compress_path(Path::new("backup.tar.zst"), CompressionMethod::Gzip).is_err()
+        );
+        assert!(
+            validate_compress_path(Path::new("backup.tar.gz"), CompressionMethod::Zstd).is_err()
+        );
+    }
 }

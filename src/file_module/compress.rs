@@ -52,7 +52,7 @@ fn create_encoder(
 }
 
 impl<'a> FileManager<'a> {
-    /// Compress a file or directory into a tar.gz archive.
+    /// Compress a file or directory into a gzip- or Zstandard-compressed tar archive.
     pub fn compress_path(
         &self,
         method: CompressionMethod,
@@ -74,7 +74,7 @@ impl<'a> FileManager<'a> {
         let dst = self.file_dest.as_path();
 
         // Ensure destination is valid for compression
-        validate_compress_path(dst)?;
+        validate_compress_path(dst, method)?;
 
         if src.is_dir() {
             valid_directory(src)?;

@@ -105,6 +105,8 @@ arkive compress data/ backup/data.tar.gz --metadata
 
 Timestamped destination names are controlled by the `use_timestamp` config
 setting; there is currently no `--timestamp` option on this command.
+Gzip destinations must end in `.tar.gz` or `.tgz`; Zstandard destinations must
+end in `.tar.zst` or `.tzst`.
 
 ### Deploy a backup
 

@@ -108,7 +108,7 @@ pub enum Command {
         ignore: IgnoreArgs,
     },
 
-    /// Compress a file or directory into a tar.gz archive
+    /// Compress a file or directory into a gzip- or Zstandard-compressed tar archive
     Compress {
         /// Source path
         src: PathBuf,
