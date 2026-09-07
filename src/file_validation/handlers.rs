@@ -41,7 +41,22 @@ pub fn ensure_not_nested(src: &Path, dst: &Path) -> Result<(), FileManagerError>
 
 // Validates that the path can be accessed
 pub fn validate_access_permissions(path: &Path) -> Result<(), FileManagerError> {
-    // Canonicalize
+    // Inspect the caller-supplied path before canonicalizing it. Canonicalizing
+    // first would resolve a symlink and make the later symlink check observe
+    // the target instead of the link.
+    let input_meta = fs::symlink_metadata(path).map_err(|err| match err.kind() {
+        std::io::ErrorKind::PermissionDenied => {
+            FileManagerError::PermissionDenied(format!("Cannot access {:?}: {err}", path))
+        }
+        _ => FileManagerError::InvalidDirectory(format!("Invalid path {:?}: {err}", path)),
+    })?;
+    if input_meta.file_type().is_symlink() {
+        return Err(FileManagerError::PermissionDenied(format!(
+            "Symlink not allowed: {:?}",
+            path
+        )));
+    }
+
     let canon = path.canonicalize().map_err(|err| match err.kind() {
         std::io::ErrorKind::PermissionDenied => {
             FileManagerError::PermissionDenied(format!("Cannot access {:?}: {err}", path))
@@ -49,14 +64,7 @@ pub fn validate_access_permissions(path: &Path) -> Result<(), FileManagerError> 
         _ => FileManagerError::InvalidDirectory(format!("Invalid path {:?}: {err}", path)),
     })?;
 
-    // Reject symlinks
-    let meta = fs::symlink_metadata(&canon)?;
-    if meta.file_type().is_symlink() {
-        return Err(FileManagerError::PermissionDenied(format!(
-            "Symlink not allowed: {:?}",
-            canon
-        )));
-    }
+    let meta = fs::metadata(&canon)?;
 
     // Check read permission
     if meta.is_dir() {

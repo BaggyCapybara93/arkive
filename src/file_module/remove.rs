@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::file_module::FileManager;
 use crate::file_module::error::FileManagerError;
+use crate::file_validation::handlers::valid_directory;
 
 /// Options for file removal
 #[derive(Debug)]
@@ -32,11 +33,7 @@ impl<'a> FileManager<'a> {
             Self::acquire_paths([src])
         };
 
-        if !src.is_dir() {
-            return Err(FileManagerError::InvalidInput(
-                "Remove files requires a directory".into(),
-            ));
-        }
+        valid_directory(src)?;
 
         let files_to_remove = Self::find_files_to_remove(src, pattern, extension)?;
         let progress = if !files_to_remove.is_empty() {
@@ -112,8 +109,13 @@ impl<'a> FileManager<'a> {
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
+            let file_type = entry.file_type()?;
 
-            if path.is_file() {
+            if file_type.is_symlink() {
+                continue;
+            }
+
+            if file_type.is_file() {
                 let file_name = path
                     .file_name()
                     .ok_or_else(|| FileManagerError::InvalidInput("File has no name".into()))?;
@@ -128,7 +130,7 @@ impl<'a> FileManager<'a> {
                 if should_remove {
                     files.push(path);
                 }
-            } else if path.is_dir() {
+            } else if file_type.is_dir() {
                 // Recursively search subdirectories
                 let sub_files = Self::find_files_to_remove(&path, pattern, extension)?;
                 files.extend(sub_files);
@@ -229,5 +231,59 @@ mod tests {
             .unwrap();
 
         assert_eq!(std::fs::read(matching).unwrap(), b"keep");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_skips_symlinked_directories_and_rejects_a_symlink_root() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TestDir::new("remove-symlink");
+        let source = temp.path().join("source");
+        let external = temp.path().join("external");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::create_dir(&external).unwrap();
+        std::fs::write(source.join("local.log"), b"remove").unwrap();
+        std::fs::write(external.join("outside.log"), b"keep").unwrap();
+        symlink(&external, source.join("linked-external")).unwrap();
+
+        let settings = Settings::default();
+        FileManager::new(&source, "", &settings)
+            .remove_files(
+                "*.log",
+                None,
+                RemoveOptions {
+                    trash: false,
+                    dry_run: false,
+                    verbose: false,
+                },
+            )
+            .unwrap();
+
+        assert!(!source.join("local.log").exists());
+        assert_eq!(
+            std::fs::read(external.join("outside.log")).unwrap(),
+            b"keep"
+        );
+
+        let root_link = temp.path().join("source-link");
+        symlink(&external, &root_link).unwrap();
+        assert!(
+            FileManager::new(&root_link, "", &settings)
+                .remove_files(
+                    "*.log",
+                    None,
+                    RemoveOptions {
+                        trash: false,
+                        dry_run: false,
+                        verbose: false,
+                    },
+                )
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read(external.join("outside.log")).unwrap(),
+            b"keep"
+        );
     }
 }

@@ -4,6 +4,7 @@ use std::time::SystemTime;
 
 use crate::file_module::FileManager;
 use crate::file_module::error::FileManagerError;
+use crate::file_validation::handlers::valid_directory;
 
 impl<'a> FileManager<'a> {
     /// Clean up the workspace with multiple options
@@ -37,11 +38,7 @@ impl<'a> FileManager<'a> {
     fn scan_unused_files(&self) -> Result<(), FileManagerError> {
         let src = self.file_path.as_path();
 
-        if !src.is_dir() {
-            return Err(FileManagerError::InvalidInput(
-                "Scan for unused files requires a directory".into(),
-            ));
-        }
+        valid_directory(src)?;
 
         let now = SystemTime::now();
         let thirty_days = 30 * 24 * 60 * 60;
@@ -114,10 +111,15 @@ impl<'a> FileManager<'a> {
         let entries: Vec<_> = fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
         for entry in entries {
             let path = entry.path();
+            let file_type = entry.file_type()?;
+
+            if file_type.is_symlink() {
+                continue;
+            }
 
             Self::scan_file(&path, now, thirty_days, settings, unused_files)?;
 
-            if path.is_dir() {
+            if file_type.is_dir() {
                 Self::scan_directory_recursive(
                     &path,
                     now,
@@ -139,11 +141,7 @@ impl<'a> FileManager<'a> {
     fn scan_and_remove_empty_dirs(&self) -> Result<(), FileManagerError> {
         let src = self.file_path.as_path();
 
-        if !src.is_dir() {
-            return Err(FileManagerError::InvalidInput(
-                "Scan for empty directories requires a directory".into(),
-            ));
-        }
+        valid_directory(src)?;
 
         let mut empty_count = 0;
         let mut empty_dirs: Vec<PathBuf> = Vec::new();
@@ -197,8 +195,13 @@ impl<'a> FileManager<'a> {
                 for entry in entries {
                     let entry = entry?;
                     let entry_path = entry.path();
+                    let file_type = entry.file_type()?;
 
-                    if entry_path.is_dir() {
+                    if file_type.is_symlink() {
+                        continue;
+                    }
+
+                    if file_type.is_dir() {
                         Self::find_empty_dirs_recursive(&entry_path, empty_dirs, progress)?;
 
                         // Check if directory is empty after children processed.
@@ -247,4 +250,40 @@ pub struct CleanupOptions {
 
     /// Scan for and remove empty directories
     pub scan_empty_dirs: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CleanupOptions, FileManager};
+    use crate::settings::Settings;
+    use crate::test::TestDir;
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_does_not_follow_symlinked_directories() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TestDir::new("cleanup-symlink");
+        let source = temp.path().join("source");
+        let external = temp.path().join("external");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::create_dir(&external).unwrap();
+        std::fs::write(external.join("outside.txt"), b"keep").unwrap();
+        symlink(&external, source.join("linked-external")).unwrap();
+
+        let settings = Settings::default();
+        FileManager::new(&source, "", &settings)
+            .cleanup(CleanupOptions {
+                scan_unused: true,
+                scan_empty_dirs: true,
+                ..CleanupOptions::default()
+            })
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read(external.join("outside.txt")).unwrap(),
+            b"keep"
+        );
+        assert!(source.join("linked-external").exists());
+    }
 }

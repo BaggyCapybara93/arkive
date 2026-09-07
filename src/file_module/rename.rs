@@ -3,6 +3,7 @@ use std::path::Path;
 
 use crate::file_module::FileManager;
 use crate::file_module::error::FileManagerError;
+use crate::file_validation::handlers::valid_directory;
 
 impl<'a> FileManager<'a> {
     /// Rename a file or directory to the destination.
@@ -57,19 +58,7 @@ impl<'a> FileManager<'a> {
         recursive: bool,
         template: &str,
     ) -> Result<(), FileManagerError> {
-        if !root.exists() {
-            return Err(FileManagerError::InvalidDirectory(format!(
-                "Path does not exist: {:?}",
-                root
-            )));
-        }
-
-        if !root.is_dir() {
-            return Err(FileManagerError::InvalidDirectory(format!(
-                "Path is not a directory: {:?}",
-                root
-            )));
-        }
+        valid_directory(root)?;
 
         let mut matched_paths = Vec::new();
         for entry in fs::read_dir(root)? {
@@ -135,7 +124,8 @@ impl<'a> FileManager<'a> {
             for entry in fs::read_dir(root)? {
                 let entry = entry?;
                 let path = entry.path();
-                if path.is_dir() {
+                let file_type = entry.file_type()?;
+                if file_type.is_dir() {
                     self.rename_matching_items_unlocked(&path, pattern, extension, true, template)?;
                 }
             }
@@ -224,6 +214,8 @@ impl<'a> FileManager<'a> {
 #[cfg(test)]
 mod tests {
     use super::FileManager;
+    use crate::settings::Settings;
+    use crate::test::TestDir;
 
     #[test]
     fn pattern_matching_supports_globs() {
@@ -239,5 +231,31 @@ mod tests {
     fn rename_templates_preserve_extension_when_missing() {
         let renamed = FileManager::build_renamed_name("notes.txt", "prefix-{name}").unwrap();
         assert_eq!(renamed, "prefix-notes.txt");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_rename_skips_symlinked_directories() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TestDir::new("rename-symlink");
+        let source = temp.path().join("source");
+        let external = temp.path().join("external");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::create_dir(&external).unwrap();
+        std::fs::write(source.join("local.txt"), b"rename").unwrap();
+        std::fs::write(external.join("outside.txt"), b"keep").unwrap();
+        symlink(&external, source.join("linked-external")).unwrap();
+
+        let settings = Settings::default();
+        FileManager::new(&source, "", &settings)
+            .rename_matching_items(Some("*.txt"), None, true, "renamed-{name}")
+            .unwrap();
+
+        assert!(source.join("renamed-local.txt").exists());
+        assert_eq!(
+            std::fs::read(external.join("outside.txt")).unwrap(),
+            b"keep"
+        );
     }
 }
