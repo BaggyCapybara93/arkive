@@ -8,7 +8,9 @@ use crate::file_module::add_timestamp_to_path;
 use crate::file_module::error::FileManagerError;
 use crate::file_module::ignore::{IgnoreMatcher, IgnoreStats};
 use crate::file_module::ops::create_temp_file_sibling;
-use crate::file_validation::handlers::{valid_directory, validate_compress_path};
+use crate::file_validation::handlers::{
+    ensure_not_nested, valid_directory, validate_compress_path,
+};
 
 use super::manager::FileManager;
 
@@ -87,6 +89,8 @@ impl<'a> FileManager<'a> {
         } else {
             dst.to_path_buf()
         };
+
+        ensure_not_nested(src, &final_dst)?;
 
         if self.settings.dry_run {
             if self.settings.verbose {
@@ -211,5 +215,20 @@ mod tests {
         std::io::Read::read_to_end(&mut entry, &mut contents).unwrap();
         assert_eq!(contents, b"archive me");
         assert!(entries.next().is_none());
+    }
+
+    #[test]
+    fn compression_rejects_archive_inside_source_directory() {
+        let temp = TestDir::new("compress-nested");
+        let source = temp.path().join("source");
+        let destination = source.join("backup.tar.gz");
+        std::fs::create_dir(&source).unwrap();
+
+        let settings = Settings::default();
+        let result = FileManager::new(&source, &destination, &settings)
+            .compress_path(CompressionMethod::Gzip, false);
+
+        assert!(result.is_err());
+        assert!(!destination.exists());
     }
 }

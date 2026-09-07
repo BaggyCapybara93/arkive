@@ -24,10 +24,19 @@ pub fn sanitize_file_name(file_name: &OsStr) -> String {
 
 pub fn ensure_not_nested(src: &Path, dst: &Path) -> Result<(), FileManagerError> {
     let src = src.canonicalize()?;
-    let dst = match dst.canonicalize() {
-        Ok(path) => path,
-        Err(_) => dst.to_path_buf(),
-    };
+    match fs::symlink_metadata(dst) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(FileManagerError::InvalidInput(format!(
+                "Destination {:?} is a symlink",
+                dst
+            )));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    let dst = normalize_path_for_comparison(dst)?;
 
     if dst.starts_with(&src) {
         return Err(FileManagerError::InvalidInput(format!(
@@ -37,6 +46,46 @@ pub fn ensure_not_nested(src: &Path, dst: &Path) -> Result<(), FileManagerError>
     }
 
     Ok(())
+}
+
+/// Normalize a path even when its final components do not exist yet. The
+/// existing prefix is canonicalized so relative destinations can still be
+/// compared with the canonical source path.
+fn normalize_path_for_comparison(path: &Path) -> Result<std::path::PathBuf, FileManagerError> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+
+    if let Ok(canonical) = absolute.canonicalize() {
+        return Ok(canonical);
+    }
+
+    let mut existing = absolute.clone();
+    let mut missing = Vec::new();
+    loop {
+        match fs::symlink_metadata(&existing) {
+            Ok(_) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let name = existing.file_name().ok_or_else(|| {
+                    FileManagerError::InvalidInput(format!(
+                        "Cannot normalize destination {:?}",
+                        path
+                    ))
+                })?;
+                missing.push(name.to_os_string());
+                existing.pop();
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    let mut normalized = existing.canonicalize()?;
+    for component in missing.iter().rev() {
+        normalized.push(component);
+    }
+    Ok(normalized)
 }
 
 // Validates that the path can be accessed
@@ -171,9 +220,12 @@ pub fn validate_compress_path(
 
 #[cfg(test)]
 mod tests {
-    use super::validate_compress_path;
+    use super::{ensure_not_nested, validate_compress_path};
     use crate::file_module::compress::CompressionMethod;
+    use crate::test::TestDir;
+    use std::fs;
     use std::path::Path;
+    use std::path::PathBuf;
 
     #[test]
     fn compression_extensions_match_the_selected_encoder() {
@@ -192,5 +244,42 @@ mod tests {
         assert!(
             validate_compress_path(Path::new("backup.tar.gz"), CompressionMethod::Zstd).is_err()
         );
+    }
+
+    #[test]
+    fn relative_missing_destination_cannot_be_nested_in_source() {
+        let root_name = format!(
+            ".arkive-nested-check-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        );
+        let root = std::env::current_dir().unwrap().join(&root_name);
+        let source = root.join("source");
+        fs::create_dir_all(&source).unwrap();
+
+        let relative_source = PathBuf::from(&root_name).join("source");
+        let relative_destination = relative_source.join("nested/output");
+        let result = ensure_not_nested(&relative_source, &relative_destination);
+
+        fs::remove_dir_all(root).unwrap();
+        assert!(result.is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_symlink_destination_is_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TestDir::new("nested-symlink");
+        let source = temp.path().join("source");
+        let outside = temp.path().join("outside");
+        let destination = temp.path().join("destination");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&outside).unwrap();
+        symlink(&outside, &destination).unwrap();
+
+        let result = ensure_not_nested(&source, &destination);
+
+        assert!(result.is_err());
     }
 }
