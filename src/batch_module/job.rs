@@ -54,13 +54,11 @@ impl Job {
             WorkType::Move => {
                 if recursive {
                     let add_timestamp = self.timestamp.unwrap_or(settings.use_timestamp);
-                    fm.copy_path(true, add_timestamp)?;
+                    let copied_path = fm.copy_path(true, add_timestamp)?;
                     // Only delete source if copy succeeded (destination exists)
-                    if fm.file_dest.exists() {
+                    if copied_path.exists() {
                         fm.delete_path(self.source.clone(), true, false)?;
                     } else {
-                        // Rollback on failure
-                        fm.delete_path(&fm.file_dest, true, false)?;
                         return Err(FileManagerError::InvalidInput(
                             "Recursive move failed: destination not created".to_string(),
                         ));
@@ -98,5 +96,55 @@ impl Job {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Job, WorkType};
+    use crate::settings::Settings;
+    use crate::test::TestDir;
+    use std::sync::Arc;
+
+    #[test]
+    fn timestamped_recursive_move_deletes_source_after_copying_actual_destination() {
+        let temp = TestDir::new("batch-timestamped-move");
+        let source = temp.path().join("source");
+        let destination = temp.path().join("backup");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("file.txt"), b"move me").unwrap();
+
+        let settings = Settings {
+            use_timestamp: true,
+            ..Settings::default()
+        };
+        let job = Job {
+            work_type: WorkType::Move,
+            source: source.to_string_lossy().into_owned(),
+            destination: Some(destination.to_string_lossy().into_owned()),
+            recursive: Some(true),
+            cleanup: Some(false),
+            compression_method: None,
+            timestamp: Some(true),
+            settings: Some(Arc::new(settings)),
+        };
+
+        job.execute(None).unwrap();
+
+        assert!(!source.exists());
+        let timestamped_destinations: Vec<_> = std::fs::read_dir(temp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("20"))
+            })
+            .collect();
+        assert_eq!(timestamped_destinations.len(), 1);
+        assert_eq!(
+            std::fs::read(timestamped_destinations[0].join("file.txt")).unwrap(),
+            b"move me"
+        );
     }
 }
