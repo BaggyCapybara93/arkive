@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::file_module::add_timestamp_to_path;
 use crate::file_module::error::FileManagerError;
 use crate::file_module::ignore::{IgnoreMatcher, IgnoreStats};
+use crate::file_module::ops::create_temp_file_sibling;
 use crate::file_validation::handlers::{valid_directory, validate_compress_path};
 
 use super::manager::FileManager;
@@ -97,31 +98,42 @@ impl<'a> FileManager<'a> {
             return Ok((final_dst, ignore_stats));
         }
 
-        let file = fs::File::create(&final_dst)?;
-        let encoder = create_encoder(&method, file)?;
-        let mut tar = tar::Builder::new(encoder);
+        let staging = create_temp_file_sibling(&final_dst)?;
+        let result = (|| {
+            let file = fs::File::create(&staging)?;
+            let encoder = create_encoder(&method, file)?;
+            let mut tar = tar::Builder::new(encoder);
 
-        if src.is_dir() {
-            let src_name = src
-                .file_name()
-                .ok_or_else(|| FileManagerError::InvalidInput("Invalid directory name".into()))?;
-            tar.append_dir(src_name, src)?;
-            append_directory_filtered(
-                &mut tar,
-                src,
-                std::path::Path::new(src_name),
-                matcher,
-                &mut ignore_stats,
-            )?;
-        } else {
-            let name = src
-                .file_name()
-                .ok_or_else(|| FileManagerError::InvalidInput("Invalid file name".into()))?;
-            tar.append_path_with_name(src, name)?;
+            if src.is_dir() {
+                let src_name = src.file_name().ok_or_else(|| {
+                    FileManagerError::InvalidInput("Invalid directory name".into())
+                })?;
+                tar.append_dir(src_name, src)?;
+                append_directory_filtered(
+                    &mut tar,
+                    src,
+                    std::path::Path::new(src_name),
+                    matcher,
+                    &mut ignore_stats,
+                )?;
+            } else {
+                let name = src
+                    .file_name()
+                    .ok_or_else(|| FileManagerError::InvalidInput("Invalid file name".into()))?;
+                tar.append_path_with_name(src, name)?;
+            }
+
+            tar.finish()?;
+            drop(tar);
+            fs::rename(&staging, &final_dst)?;
+            Ok(())
+        })();
+
+        if result.is_err() {
+            let _ = fs::remove_file(&staging);
         }
 
-        tar.finish()?;
-        Ok((final_dst, ignore_stats))
+        result.map(|()| (final_dst, ignore_stats))
     }
 }
 
@@ -153,4 +165,51 @@ fn append_directory_filtered<W: Write>(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CompressionMethod, FileManager};
+    use crate::settings::Settings;
+    use crate::test::TestDir;
+    use flate2::read::GzDecoder;
+    use std::fs::File;
+
+    #[test]
+    fn failed_compression_preserves_existing_archive() {
+        let temp = TestDir::new("compress-rollback");
+        let source = temp.path().join("missing");
+        let destination = temp.path().join("backup.tar.gz");
+        std::fs::write(&destination, b"keep me").unwrap();
+
+        let settings = Settings::default();
+        let result = FileManager::new(&source, &destination, &settings)
+            .compress_path(CompressionMethod::Gzip, false);
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(destination).unwrap(), b"keep me");
+    }
+
+    #[test]
+    fn successful_compression_installs_a_valid_archive() {
+        let temp = TestDir::new("compress-success");
+        let source = temp.path().join("source.txt");
+        let destination = temp.path().join("backup.tar.gz");
+        std::fs::write(&source, b"archive me").unwrap();
+
+        let settings = Settings::default();
+        FileManager::new(&source, &destination, &settings)
+            .compress_path(CompressionMethod::Gzip, false)
+            .unwrap();
+
+        let file = File::open(destination).unwrap();
+        let mut archive = tar::Archive::new(GzDecoder::new(file));
+        let mut entries = archive.entries().unwrap();
+        let mut entry = entries.next().unwrap().unwrap();
+        assert_eq!(entry.path().unwrap(), std::path::Path::new("source.txt"));
+        let mut contents = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut contents).unwrap();
+        assert_eq!(contents, b"archive me");
+        assert!(entries.next().is_none());
+    }
 }

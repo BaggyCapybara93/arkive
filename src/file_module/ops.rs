@@ -1,9 +1,60 @@
-use std::fs;
+use std::ffi::{OsStr, OsString};
+use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::manager::FileManager;
 use crate::file_module::error::FileManagerError;
 use crate::file_validation::handlers::{sanitize_file_name, valid_directory};
+
+static TEMP_PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn temporary_sibling_path(path: &Path) -> PathBuf {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path.file_name().unwrap_or_else(|| OsStr::new("output"));
+    let counter = TEMP_PATH_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut temporary_name = OsString::from(".arkive-tmp-");
+    temporary_name.push(std::process::id().to_string());
+    temporary_name.push("-");
+    temporary_name.push(counter.to_string());
+    temporary_name.push("-");
+    temporary_name.push(file_name);
+    parent.join(temporary_name)
+}
+
+pub(crate) fn create_temp_file_sibling(path: &Path) -> Result<PathBuf, FileManagerError> {
+    for _ in 0..1000 {
+        let candidate = temporary_sibling_path(path);
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(_) => return Ok(candidate),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    Err(FileManagerError::InvalidInput(
+        "Could not allocate a temporary sibling path".into(),
+    ))
+}
+
+pub(crate) fn create_temp_dir_sibling(path: &Path) -> Result<PathBuf, FileManagerError> {
+    for _ in 0..1000 {
+        let candidate = temporary_sibling_path(path);
+        match fs::create_dir(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    Err(FileManagerError::InvalidInput(
+        "Could not allocate a temporary sibling path".into(),
+    ))
+}
 
 impl<'a> FileManager<'a> {
     pub(crate) fn canonical_destination_file(
