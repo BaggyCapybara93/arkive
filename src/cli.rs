@@ -127,14 +127,18 @@ pub enum Command {
         ignore: IgnoreArgs,
     },
 
-    /// Restore a backup to its recorded original path
+    /// Restore a backup to an explicit destination
     Deploy {
         /// Copied path, moved path, or compressed archive to restore
         backup: PathBuf,
 
-        /// Restore somewhere other than the recorded original path
+        /// Destination to restore the backup into
         #[arg(long)]
         destination: Option<PathBuf>,
+
+        /// Explicitly authorize using the path recorded in the backup metadata
+        #[arg(long, conflicts_with = "destination")]
+        use_recorded_destination: bool,
 
         /// Replace an existing destination
         #[arg(long)]
@@ -478,9 +482,16 @@ pub fn cli_handler(cmd: Command, settings: &Settings) -> Result<(), AppError> {
         Command::Deploy {
             backup,
             destination,
+            use_recorded_destination,
             force,
         } => {
-            deploy::deploy(&backup, destination.as_deref(), force, settings)?;
+            deploy::deploy(
+                &backup,
+                destination.as_deref(),
+                force,
+                use_recorded_destination,
+                settings,
+            )?;
             Ok(())
         }
         Command::Ignore { command } => handle_ignore(command),

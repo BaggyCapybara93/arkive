@@ -111,21 +111,22 @@ end in `.tar.zst` or `.tzst`.
 
 Pass `--metadata` to `copy`, `move`, or `compress` to create a portable
 `<backup>.arkive.json` sidecar. Keep this file beside the backup when moving it
-to another machine. Deploy restores the backup to its recorded original path:
+to another machine. Because the sidecar is untrusted input, deploy requires an
+explicit destination by default:
 
 ```bash
 arkive compress test test.tar.gz --metadata
 rm -rf test
-arkive deploy test.tar.gz
+arkive deploy test.tar.gz --destination ./test
 ```
 
-Use `--destination` when the original absolute path is not suitable on the
-current machine. Arkive refuses to overwrite an existing destination unless
-`--force` is supplied.
+To restore to the path recorded in the sidecar, opt in with
+`--use-recorded-destination`. Arkive refuses to overwrite an existing
+destination unless `--force` is supplied, including for partial moves.
 
 ```bash
 arkive deploy test.tar.gz --destination /srv/restored/test
-arkive deploy test.tar.gz --force
+arkive deploy test.tar.gz --use-recorded-destination --force
 ```
 
 Deployment copies regular and directory backups, so the backup remains intact.

@@ -83,6 +83,7 @@ pub fn deploy(
     backup: &Path,
     destination: Option<&Path>,
     force: bool,
+    use_recorded_destination: bool,
     settings: &Settings,
 ) -> Result<PathBuf, FileManagerError> {
     let manifest_file = manifest_path(backup)?;
@@ -103,16 +104,25 @@ pub fn deploy(
         )));
     }
 
-    let target = destination
-        .map(Path::to_path_buf)
-        .unwrap_or(manifest.original_path);
+    let target = match destination {
+        Some(destination) => destination.to_path_buf(),
+        None if use_recorded_destination => manifest.original_path,
+        None => {
+            return Err(FileManagerError::InvalidInput(
+                "Provide --destination or --use-recorded-destination to authorize the restore target"
+                    .into(),
+            ));
+        }
+    };
 
     let can_merge_partial_move = manifest.partial_move
         && matches!(manifest.kind, BackupKind::Move)
         && target.is_dir()
         && backup.is_dir();
 
-    if target.exists() && !force && !can_merge_partial_move {
+    let target_is_occupied = target_is_occupied(&target)?;
+
+    if target_is_occupied && !force {
         return Err(FileManagerError::InvalidInput(format!(
             "Restore destination {:?} already exists; use --force to replace it",
             target
@@ -130,7 +140,7 @@ pub fn deploy(
 
     match manifest.kind {
         BackupKind::Copy | BackupKind::Move => {
-            if force && target.exists() && !can_merge_partial_move {
+            if force && target_is_occupied && !can_merge_partial_move {
                 remove_existing(&target)?;
             }
             restore_copy(backup, &target)?
@@ -148,6 +158,14 @@ pub fn deploy(
         println!("Deployed {:?} to {:?}", backup, target);
     }
     Ok(target)
+}
+
+fn target_is_occupied(path: &Path) -> Result<bool, FileManagerError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn restore_copy(backup: &Path, target: &Path) -> Result<(), FileManagerError> {
@@ -223,12 +241,14 @@ fn remove_existing(path: &Path) -> Result<(), FileManagerError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BackupKind, deploy, save_manifest};
+    use super::{BackupKind, deploy, save_manifest, save_manifest_with_ignores};
     use crate::settings::Settings;
     use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
 
     #[test]
-    fn copied_backup_can_be_deployed_to_its_original_path() {
+    fn copied_backup_requires_explicit_authorization_for_recorded_destination() {
         let root = std::env::temp_dir().join(format!(
             "arkive-deploy-test-{}-{}",
             std::process::id(),
@@ -242,10 +262,80 @@ mod tests {
         save_manifest(&original, &backup, BackupKind::Copy, None).unwrap();
         fs::remove_file(&original).unwrap();
 
-        let restored = deploy(&backup, None, false, &Settings::default()).unwrap();
+        let denied = deploy(&backup, None, false, false, &Settings::default());
+        assert!(denied.is_err());
+        assert!(!original.exists());
+
+        let explicit_target = root.join("explicit-target.txt");
+        let explicitly_restored = deploy(
+            &backup,
+            Some(&explicit_target),
+            false,
+            false,
+            &Settings::default(),
+        )
+        .unwrap();
+        assert_eq!(explicitly_restored, explicit_target);
+        assert_eq!(fs::read_to_string(&explicit_target).unwrap(), "deploy me");
+
+        let restored = deploy(&backup, None, false, true, &Settings::default()).unwrap();
 
         assert_eq!(restored, original);
         assert_eq!(fs::read_to_string(&original).unwrap(), "deploy me");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn partial_move_cannot_merge_into_existing_destination_without_force() {
+        let root = std::env::temp_dir().join(format!(
+            "arkive-deploy-partial-move-test-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let target = root.join("target");
+        let backup = root.join("backup");
+        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(&backup).unwrap();
+        fs::write(target.join("replace.txt"), "original").unwrap();
+        fs::write(backup.join("replace.txt"), "backup").unwrap();
+        save_manifest_with_ignores(&target, &backup, BackupKind::Move, None, &[], true).unwrap();
+
+        let denied = deploy(&backup, Some(&target), false, false, &Settings::default());
+
+        assert!(denied.is_err());
+        assert_eq!(
+            fs::read_to_string(target.join("replace.txt")).unwrap(),
+            "original"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_symlink_destination_requires_force() {
+        let root = std::env::temp_dir().join(format!(
+            "arkive-deploy-dangling-link-test-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let backup = root.join("backup.txt");
+        let target = root.join("target.txt");
+        let external_target = root.join("external.txt");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&backup, "backup").unwrap();
+        symlink(&external_target, &target).unwrap();
+        save_manifest(&target, &backup, BackupKind::Copy, None).unwrap();
+
+        let denied = deploy(&backup, None, false, true, &Settings::default());
+
+        assert!(denied.is_err());
+        assert!(!external_target.exists());
+        assert!(
+            fs::symlink_metadata(&target)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
         fs::remove_dir_all(root).unwrap();
     }
 }
