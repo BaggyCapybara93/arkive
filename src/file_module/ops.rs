@@ -1,40 +1,78 @@
-use std::fs;
+use std::ffi::{OsStr, OsString};
+use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
-
-use crate::file_validation::handlers::{
-    valid_directory,
-    sanitize_file_name,
-};
-use crate::file_module::error::FileManagerError;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::manager::FileManager;
+use crate::file_module::error::FileManagerError;
+use crate::file_validation::handlers::{sanitize_file_name, valid_directory};
+
+static TEMP_PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn temporary_sibling_path(path: &Path) -> PathBuf {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path.file_name().unwrap_or_else(|| OsStr::new("output"));
+    let counter = TEMP_PATH_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut temporary_name = OsString::from(".arkive-tmp-");
+    temporary_name.push(std::process::id().to_string());
+    temporary_name.push("-");
+    temporary_name.push(counter.to_string());
+    temporary_name.push("-");
+    temporary_name.push(file_name);
+    parent.join(temporary_name)
+}
+
+pub(crate) fn create_temp_file_sibling(path: &Path) -> Result<PathBuf, FileManagerError> {
+    for _ in 0..1000 {
+        let candidate = temporary_sibling_path(path);
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(_) => return Ok(candidate),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    Err(FileManagerError::InvalidInput(
+        "Could not allocate a temporary sibling path".into(),
+    ))
+}
+
+pub(crate) fn create_temp_dir_sibling(path: &Path) -> Result<PathBuf, FileManagerError> {
+    for _ in 0..1000 {
+        let candidate = temporary_sibling_path(path);
+        match fs::create_dir(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    Err(FileManagerError::InvalidInput(
+        "Could not allocate a temporary sibling path".into(),
+    ))
+}
 
 impl<'a> FileManager<'a> {
-    pub(crate) fn canonical_destination_file(src: &Path, dst: &Path) -> Result<PathBuf, FileManagerError> {
+    pub(crate) fn canonical_destination_file(
+        src: &Path,
+        dst: &Path,
+    ) -> Result<PathBuf, FileManagerError> {
         if dst.is_dir() {
-            let file_name = src.file_name()
+            let file_name = src
+                .file_name()
                 .ok_or_else(|| FileManagerError::InvalidInput("Invalid source file name".into()))?;
-            
+
             // Sanitize file name to prevent path traversal
             let sanitized_name = sanitize_file_name(file_name);
-            
+
             Ok(dst.join(Path::new(&sanitized_name)))
         } else {
             Ok(dst.to_path_buf())
         }
-    }
-
-    pub(crate) fn central_metadata_root(root: &Path) -> Result<PathBuf, FileManagerError> {
-        let root_dir = if root.is_dir() {
-            root.to_path_buf()
-        } else {
-            root.parent()
-                .map(|p| p.to_path_buf())
-                .ok_or_else(|| FileManagerError::InvalidInput("Invalid destination path".into()))?
-        };
-
-        // Metadata directory, not a file
-        Ok(root_dir.join(".arkive_metadata"))
     }
 
     pub(crate) fn collect_file_paths(&self, root: &Path) -> Result<Vec<PathBuf>, FileManagerError> {
@@ -56,7 +94,7 @@ impl<'a> FileManager<'a> {
     }
 
     /// Move a file or directory to the destination.
-    pub fn move_path(&self) -> Result<(), FileManagerError> {
+    pub fn move_path(&self) -> Result<PathBuf, FileManagerError> {
         let _guard = self.acquire_lock();
         let src = self.file_path.as_path();
         let dst = self.file_dest.as_path();
@@ -65,20 +103,14 @@ impl<'a> FileManager<'a> {
             valid_directory(src)?;
         }
 
-        // Pre-collect old paths for metadata removal
-        let source_paths = if self.settings.enable_metadata && src.is_dir() {
-            Some(self.collect_file_paths(src)?)
-        } else {
-            None
-        };
-
         if self.settings.dry_run {
             if self.settings.verbose {
                 println!("[DRY-RUN] Would move {:?} to {:?}", src, dst);
             }
-            return Ok(());
+            return Ok(dst.to_path_buf());
         }
 
+        let source_metadata_keys = self.metadata_keys_for_path(src)?;
         let dest_path = Self::canonical_destination_file(src, dst)?;
         fs::rename(src, &dest_path)?;
 
@@ -88,44 +120,54 @@ impl<'a> FileManager<'a> {
             if dest_path.is_file() {
                 self.save_metadata_for_file(&dest_path, &manager)?;
             } else if dest_path.is_dir() {
-                self.save_metadata_for_directory(src, &dest_path, &manager)?;
+                self.save_metadata_for_directory(&dest_path, &manager)?;
             }
 
-            // Remove old metadata
-            if let Some(paths) = source_paths {
-                for old_path in paths {
-                    self.remove_metadata_for_file(&old_path)?;
-                }
-            } else if src.is_file() {
-                self.remove_metadata_for_file(src)?;
-            }
+            self.remove_metadata_by_keys(&source_metadata_keys)?;
         }
 
         if self.settings.verbose {
             println!("Moved {:?} to {:?}", src, dst);
         }
 
-        Ok(())
+        Ok(dest_path)
     }
 
     /// Delete a file or directory.
-    pub fn delete_path(&self, path: impl Into<PathBuf>, recursive: bool, to_trash: bool) -> Result<(), FileManagerError> {
-        let _guard = self.acquire_lock();
+    pub fn delete_path(
+        &self,
+        path: impl Into<PathBuf>,
+        recursive: bool,
+        to_trash: bool,
+    ) -> Result<(), FileManagerError> {
         let src = path.into();
         let src_path = src.as_path();
+        let trash_path = if to_trash && self.settings.enable_trash {
+            Some(Self::trash_path()?)
+        } else {
+            None
+        };
+        let _guard = if let Some(trash) = trash_path.as_deref() {
+            Self::acquire_paths([src_path, trash])
+        } else {
+            Self::acquire_paths([src_path])
+        };
 
         if src_path.is_dir() {
             valid_directory(src_path)?;
         }
 
+        let metadata_keys = if self.settings.dry_run {
+            Vec::new()
+        } else {
+            self.metadata_keys_for_path(src_path)?
+        };
+
         // Trash handling
         if to_trash && self.settings.enable_trash {
-            let trash = super::trash::trash_dir()?;
-
-            let file_name = src_path.file_name()
+            src_path
+                .file_name()
                 .ok_or_else(|| FileManagerError::InvalidInput("Invalid file name".into()))?;
-
-            let dst = trash.join(file_name);
 
             if self.settings.dry_run {
                 if self.settings.verbose {
@@ -134,14 +176,14 @@ impl<'a> FileManager<'a> {
                 return Ok(());
             }
 
-            fs::rename(src_path, dst)?;
+            let dst = FileManager::unique_trash_path(src_path)?;
+            fs::rename(src_path, &dst)?;
 
             if self.settings.verbose {
                 println!("Moved {:?} to trash", src_path);
             }
 
-            // Remove metadata
-            self.remove_metadata_for_file(src_path)?;
+            self.remove_metadata_by_keys(&metadata_keys)?;
 
             return Ok(());
         }
@@ -157,7 +199,10 @@ impl<'a> FileManager<'a> {
 
             if self.settings.dry_run {
                 if self.settings.verbose {
-                    println!("[DRY-RUN] Would permanently delete directory {:?}", src_path);
+                    println!(
+                        "[DRY-RUN] Would permanently delete directory {:?}",
+                        src_path
+                    );
                 }
                 return Ok(());
             }
@@ -174,13 +219,72 @@ impl<'a> FileManager<'a> {
             fs::remove_file(src_path)?;
         }
 
-        // Remove metadata
-        self.remove_metadata_for_file(src_path)?;
+        self.remove_metadata_by_keys(&metadata_keys)?;
 
         if self.settings.verbose {
             println!("Permanently deleted {:?}", src_path);
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FileManager;
+    use crate::settings::Settings;
+    use crate::test::TestDir;
+
+    #[test]
+    fn move_file_removes_source_and_preserves_contents() {
+        let temp = TestDir::new("move-file");
+        let source = temp.path().join("source.txt");
+        let destination = temp.path().join("destination.txt");
+        std::fs::write(&source, b"move me").unwrap();
+
+        let settings = Settings::default();
+        let moved_path = FileManager::new(&source, &destination, &settings)
+            .move_path()
+            .unwrap();
+
+        assert_eq!(moved_path, destination);
+        assert!(!source.exists());
+        assert_eq!(std::fs::read(destination).unwrap(), b"move me");
+    }
+
+    #[test]
+    fn dry_run_move_leaves_source_untouched() {
+        let temp = TestDir::new("move-dry-run");
+        let source = temp.path().join("source.txt");
+        let destination = temp.path().join("destination.txt");
+        std::fs::write(&source, b"stay here").unwrap();
+        let settings = Settings {
+            dry_run: true,
+            ..Settings::default()
+        };
+
+        FileManager::new(&source, &destination, &settings)
+            .move_path()
+            .unwrap();
+
+        assert_eq!(std::fs::read(source).unwrap(), b"stay here");
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn dry_run_delete_leaves_file_untouched() {
+        let temp = TestDir::new("delete-dry-run");
+        let source = temp.path().join("source.txt");
+        std::fs::write(&source, b"do not delete").unwrap();
+        let settings = Settings {
+            dry_run: true,
+            ..Settings::default()
+        };
+
+        FileManager::new(&source, "", &settings)
+            .delete_path(&source, false, false)
+            .unwrap();
+
+        assert_eq!(std::fs::read(source).unwrap(), b"do not delete");
     }
 }

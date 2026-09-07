@@ -1,8 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::file_module::error::FileManagerError;
 use crate::file_module::FileManager;
+use crate::file_module::error::FileManagerError;
+use crate::file_validation::handlers::valid_directory;
 
 /// Options for file removal
 #[derive(Debug)]
@@ -14,24 +15,43 @@ pub struct RemoveOptions {
 
 impl<'a> FileManager<'a> {
     /// Remove files based on name pattern or extension
-    pub fn remove_files(&self, pattern: &str, extension: Option<&str>, options: RemoveOptions) -> Result<(), FileManagerError> {
+    pub fn remove_files(
+        &self,
+        pattern: &str,
+        extension: Option<&str>,
+        options: RemoveOptions,
+    ) -> Result<(), FileManagerError> {
         let src = self.file_path.as_path();
-        
-        if !src.is_dir() {
-            return Err(FileManagerError::InvalidInput(
-                "Remove files requires a directory".into(),
-            ));
-        }
-        
+        let trash_path = if options.trash && self.settings.enable_trash {
+            Some(Self::trash_path()?)
+        } else {
+            None
+        };
+        let _guard = if let Some(trash) = trash_path.as_deref() {
+            Self::acquire_paths([src, trash])
+        } else {
+            Self::acquire_paths([src])
+        };
+
+        valid_directory(src)?;
+
         let files_to_remove = Self::find_files_to_remove(src, pattern, extension)?;
-        
+        let progress = if !files_to_remove.is_empty() {
+            FileManager::maybe_create_progress_bar(
+                files_to_remove.len().max(1) as u64,
+                "Removing matching files",
+            )
+        } else {
+            None
+        };
+
         if files_to_remove.is_empty() {
             if options.verbose {
                 println!("No files matching the pattern '{}' found", pattern);
             }
             return Ok(());
         }
-        
+
         if options.dry_run {
             if options.verbose {
                 println!("Dry run mode - no files will be removed:");
@@ -43,86 +63,98 @@ impl<'a> FileManager<'a> {
             }
             return Ok(());
         }
-        
+
         // Remove files
         for file_path in &files_to_remove {
+            let metadata_keys = self.metadata_keys_for_path(file_path)?;
+
             if options.verbose {
                 println!("Removing: {:?}", file_path);
             }
-            
-            if options.trash {
-                // Move to trash
-                let trash_path = self.get_trash_path(file_path);
-                fs::rename(file_path, &trash_path)?;
+
+            if options.trash && self.settings.enable_trash {
+                let target_path = Self::unique_trash_path(file_path)?;
+                fs::rename(file_path, &target_path)?;
             } else {
                 // Permanently delete
                 fs::remove_file(file_path)?;
             }
+
+            self.remove_metadata_by_keys(&metadata_keys)?;
+
+            if let Some(bar) = &progress {
+                bar.inc(1);
+            }
         }
-        
+
+        if let Some(bar) = progress {
+            bar.finish_with_message(format!("Removed {} file(s)", files_to_remove.len()));
+        }
+
         if options.verbose {
             println!("Removed {} file(s)", files_to_remove.len());
         }
-        
+
         Ok(())
     }
-    
+
     /// Find files matching the pattern or extension
-    fn find_files_to_remove(dir: &Path, pattern: &str, extension: Option<&str>) -> Result<Vec<PathBuf>, FileManagerError> {
+    fn find_files_to_remove(
+        dir: &Path,
+        pattern: &str,
+        extension: Option<&str>,
+    ) -> Result<Vec<PathBuf>, FileManagerError> {
         let mut files = Vec::new();
-        
+
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
-            
-            if path.is_file() {
-                let file_name = path.file_name().ok_or_else(|| FileManagerError::InvalidInput(
-                    "File has no name".into(),
-                ))?;
+            let file_type = entry.file_type()?;
+
+            if file_type.is_symlink() {
+                continue;
+            }
+
+            if file_type.is_file() {
+                let file_name = path
+                    .file_name()
+                    .ok_or_else(|| FileManagerError::InvalidInput("File has no name".into()))?;
                 let file_name_str = file_name.to_string_lossy();
-                
+
                 let should_remove = if let Some(ext) = extension {
-                    // Check if file has the specified extension
                     file_name_str.ends_with(ext)
                 } else {
-                    // Check if file name matches the pattern
                     Self::matches_pattern(&file_name_str, pattern)
                 };
-                
+
                 if should_remove {
                     files.push(path);
                 }
-            } else if path.is_dir() {
+            } else if file_type.is_dir() {
                 // Recursively search subdirectories
                 let sub_files = Self::find_files_to_remove(&path, pattern, extension)?;
                 files.extend(sub_files);
             }
         }
-        
+
         Ok(files)
     }
-    
-    /// Check if a file name matches a glob pattern
+
     fn matches_pattern(file_name: &str, pattern: &str) -> bool {
         Self::match_glob(file_name, pattern)
     }
-    
-    /// Match a file name against a glob pattern
+
     fn match_glob(file_name: &str, pattern: &str) -> bool {
-        // Convert glob pattern to regex
         let regex_pattern = Self::glob_to_regex(pattern);
-        
-        // Use regex crate for pattern matching
         match regex::Regex::new(&regex_pattern) {
             Ok(regex) => regex.is_match(file_name),
             Err(_) => false,
         }
     }
-    
-    /// Convert a glob pattern to a regex pattern
+
     fn glob_to_regex(pattern: &str) -> String {
         let mut regex = String::new();
-        
+
         for c in pattern.chars() {
             match c {
                 '*' => regex.push_str(".*"),
@@ -141,22 +173,117 @@ impl<'a> FileManager<'a> {
                 _ => regex.push(c),
             }
         }
-        
+
         regex
     }
-    
-    /// Get the trash path for a file
-    fn get_trash_path(&self, file_path: &Path) -> PathBuf {
-        let src = self.file_path.as_path();
-        let relative_path = file_path.strip_prefix(src).unwrap_or(file_path);
-        
-        // Get the trash directory
-        let trash_dir = if self.settings.enable_trash {
-            src.join(".arkive_trash")
-        } else {
-            src.to_path_buf()
-        };
-        
-        trash_dir.join(relative_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FileManager, RemoveOptions};
+    use crate::settings::Settings;
+    use crate::test::TestDir;
+
+    #[test]
+    fn remove_files_only_deletes_recursive_pattern_matches() {
+        let temp = TestDir::new("remove-pattern");
+        let nested = temp.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::write(temp.path().join("root.log"), b"remove").unwrap();
+        std::fs::write(nested.join("nested.log"), b"remove").unwrap();
+        std::fs::write(nested.join("keep.txt"), b"keep").unwrap();
+
+        let settings = Settings::default();
+        FileManager::new(temp.path(), "", &settings)
+            .remove_files(
+                "*.log",
+                None,
+                RemoveOptions {
+                    trash: false,
+                    dry_run: false,
+                    verbose: false,
+                },
+            )
+            .unwrap();
+
+        assert!(!temp.path().join("root.log").exists());
+        assert!(!nested.join("nested.log").exists());
+        assert_eq!(std::fs::read(nested.join("keep.txt")).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn dry_run_remove_leaves_matching_files_untouched() {
+        let temp = TestDir::new("remove-dry-run");
+        let matching = temp.path().join("keep.log");
+        std::fs::write(&matching, b"keep").unwrap();
+
+        let settings = Settings::default();
+        FileManager::new(temp.path(), "", &settings)
+            .remove_files(
+                "*.log",
+                None,
+                RemoveOptions {
+                    trash: false,
+                    dry_run: true,
+                    verbose: false,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(std::fs::read(matching).unwrap(), b"keep");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_skips_symlinked_directories_and_rejects_a_symlink_root() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TestDir::new("remove-symlink");
+        let source = temp.path().join("source");
+        let external = temp.path().join("external");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::create_dir(&external).unwrap();
+        std::fs::write(source.join("local.log"), b"remove").unwrap();
+        std::fs::write(external.join("outside.log"), b"keep").unwrap();
+        symlink(&external, source.join("linked-external")).unwrap();
+
+        let settings = Settings::default();
+        FileManager::new(&source, "", &settings)
+            .remove_files(
+                "*.log",
+                None,
+                RemoveOptions {
+                    trash: false,
+                    dry_run: false,
+                    verbose: false,
+                },
+            )
+            .unwrap();
+
+        assert!(!source.join("local.log").exists());
+        assert_eq!(
+            std::fs::read(external.join("outside.log")).unwrap(),
+            b"keep"
+        );
+
+        let root_link = temp.path().join("source-link");
+        symlink(&external, &root_link).unwrap();
+        assert!(
+            FileManager::new(&root_link, "", &settings)
+                .remove_files(
+                    "*.log",
+                    None,
+                    RemoveOptions {
+                        trash: false,
+                        dry_run: false,
+                        verbose: false,
+                    },
+                )
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read(external.join("outside.log")).unwrap(),
+            b"keep"
+        );
     }
 }

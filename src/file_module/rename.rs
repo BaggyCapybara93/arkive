@@ -1,5 +1,9 @@
-use crate::file_module::error::FileManagerError;
+use std::fs;
+use std::path::Path;
+
 use crate::file_module::FileManager;
+use crate::file_module::error::FileManagerError;
+use crate::file_validation::handlers::valid_directory;
 
 impl<'a> FileManager<'a> {
     /// Rename a file or directory to the destination.
@@ -8,12 +12,6 @@ impl<'a> FileManager<'a> {
         let src = self.file_path.as_path();
         let dst = self.file_dest.as_path();
 
-        if src.is_dir() {
-            // Note: rename_path doesn't currently support recursive rename
-            // but we can use move_path logic if needed.
-            // For now, we'll use the standard fs::rename.
-        }
-
         if self.settings.dry_run {
             if self.settings.verbose {
                 println!("[DRY-RUN] Would rename {:?} to {:?}", src, dst);
@@ -21,6 +19,7 @@ impl<'a> FileManager<'a> {
             return Ok(());
         }
 
+        let source_metadata_keys = self.metadata_keys_for_path(src)?;
         let dest_path = Self::canonical_destination_file(src, dst)?;
         std::fs::rename(src, &dest_path)?;
 
@@ -30,25 +29,233 @@ impl<'a> FileManager<'a> {
             if dest_path.is_file() {
                 self.save_metadata_for_file(&dest_path, &manager)?;
             } else if dest_path.is_dir() {
-                self.save_metadata_for_directory(src, &dest_path, &manager)?;
+                self.save_metadata_for_directory(&dest_path, &manager)?;
             }
 
-            // Remove old metadata
-            let source_paths = if self.settings.enable_metadata && src.is_dir() {
-                Some(self.collect_file_paths(src)?)
-            } else {
-                None
-            };
+            self.remove_metadata_by_keys(&source_metadata_keys)?;
+        }
 
-            if let Some(paths) = source_paths {
-                for old_path in paths {
-                    self.remove_metadata_for_file(&old_path)?;
+        Ok(())
+    }
+
+    pub fn rename_matching_items(
+        &self,
+        pattern: Option<&str>,
+        extension: Option<&str>,
+        recursive: bool,
+        template: &str,
+    ) -> Result<(), FileManagerError> {
+        let _guard = self.acquire_lock();
+        let root = self.file_path.as_path();
+        self.rename_matching_items_unlocked(root, pattern, extension, recursive, template)
+    }
+
+    fn rename_matching_items_unlocked(
+        &self,
+        root: &Path,
+        pattern: Option<&str>,
+        extension: Option<&str>,
+        recursive: bool,
+        template: &str,
+    ) -> Result<(), FileManagerError> {
+        valid_directory(root)?;
+
+        let mut matched_paths = Vec::new();
+        for entry in fs::read_dir(root)? {
+            let entry = entry?;
+            let path = entry.path();
+            let file_name = entry.file_name().to_string_lossy().to_string();
+
+            if Self::matches_rename_target(&file_name, pattern, extension)? {
+                matched_paths.push(path);
+            }
+        }
+
+        matched_paths.sort();
+
+        for path in matched_paths {
+            let file_name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| {
+                    FileManagerError::InvalidInput(format!("Invalid file name: {:?}", path))
+                })?;
+
+            let new_name = Self::build_renamed_name(file_name, template)?;
+            let new_path = path.parent().unwrap_or(root).join(&new_name);
+
+            if path == new_path {
+                continue;
+            }
+
+            if self.settings.dry_run {
+                if self.settings.verbose {
+                    println!("[DRY-RUN] Would rename {:?} to {:?}", path, new_path);
                 }
-            } else if src.is_file() {
-                self.remove_metadata_for_file(src)?;
+                continue;
+            }
+
+            if new_path.exists() {
+                return Err(FileManagerError::InvalidInput(format!(
+                    "Target already exists: {:?}",
+                    new_path
+                )));
+            }
+
+            let source_metadata_keys = self.metadata_keys_for_path(&path)?;
+            fs::rename(&path, &new_path)?;
+
+            if self.settings.enable_metadata {
+                let manager = self.metadata_manager_for_destination(&new_path)?;
+                if new_path.is_file() {
+                    self.save_metadata_for_file(&new_path, &manager)?;
+                } else if new_path.is_dir() {
+                    self.save_metadata_for_directory(&new_path, &manager)?;
+                }
+                self.remove_metadata_by_keys(&source_metadata_keys)?;
+            }
+
+            if self.settings.verbose {
+                println!("Renamed {:?} to {:?}", path, new_path);
+            }
+        }
+
+        if recursive {
+            for entry in fs::read_dir(root)? {
+                let entry = entry?;
+                let path = entry.path();
+                let file_type = entry.file_type()?;
+                if file_type.is_dir() {
+                    self.rename_matching_items_unlocked(&path, pattern, extension, true, template)?;
+                }
             }
         }
 
         Ok(())
+    }
+
+    fn matches_rename_target(
+        file_name: &str,
+        pattern: Option<&str>,
+        extension: Option<&str>,
+    ) -> Result<bool, FileManagerError> {
+        if let Some(pattern_value) = pattern {
+            return Ok(Self::matches_rename_pattern(file_name, pattern_value));
+        }
+
+        if let Some(extension_value) = extension {
+            let normalized = if extension_value.starts_with('.') {
+                extension_value.to_string()
+            } else {
+                format!(".{extension_value}")
+            };
+            return Ok(file_name.ends_with(&normalized));
+        }
+
+        Ok(false)
+    }
+
+    fn matches_rename_pattern(file_name: &str, pattern: &str) -> bool {
+        let regex_pattern = Self::rename_glob_to_regex(pattern);
+        regex::Regex::new(&regex_pattern)
+            .map(|regex| regex.is_match(file_name))
+            .unwrap_or(false)
+    }
+
+    fn rename_glob_to_regex(pattern: &str) -> String {
+        let mut regex = String::from("^");
+        let mut chars = pattern.chars().peekable();
+
+        while let Some(ch) = chars.next() {
+            match ch {
+                '*' => regex.push_str(".*"),
+                '?' => regex.push('.'),
+                '.' => regex.push_str("\\."),
+                '+' => regex.push_str("\\+"),
+                '(' | ')' | '[' | ']' | '{' | '}' | '|' | '^' | '$' | '\\' => {
+                    regex.push('\\');
+                    regex.push(ch);
+                }
+                _ => regex.push(ch),
+            }
+        }
+
+        regex.push('$');
+        regex
+    }
+
+    fn build_renamed_name(file_name: &str, template: &str) -> Result<String, FileManagerError> {
+        let path = Path::new(file_name);
+        let stem = path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let extension = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let mut result = template.to_string();
+
+        result = result.replace("{name}", &stem);
+        result = result.replace("{ext}", &extension);
+        result = result.replace("{original}", file_name);
+
+        if !extension.is_empty() && !result.contains('.') {
+            result.push('.');
+            result.push_str(&extension);
+        }
+
+        Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FileManager;
+    use crate::settings::Settings;
+    use crate::test::TestDir;
+
+    #[test]
+    fn pattern_matching_supports_globs() {
+        assert!(FileManager::matches_rename_pattern("notes.txt", "*.txt"));
+        assert!(FileManager::matches_rename_pattern(
+            "archive.tar.gz",
+            "*.gz"
+        ));
+        assert!(!FileManager::matches_rename_pattern("notes.txt", "*.md"));
+    }
+
+    #[test]
+    fn rename_templates_preserve_extension_when_missing() {
+        let renamed = FileManager::build_renamed_name("notes.txt", "prefix-{name}").unwrap();
+        assert_eq!(renamed, "prefix-notes.txt");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_rename_skips_symlinked_directories() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TestDir::new("rename-symlink");
+        let source = temp.path().join("source");
+        let external = temp.path().join("external");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::create_dir(&external).unwrap();
+        std::fs::write(source.join("local.txt"), b"rename").unwrap();
+        std::fs::write(external.join("outside.txt"), b"keep").unwrap();
+        symlink(&external, source.join("linked-external")).unwrap();
+
+        let settings = Settings::default();
+        FileManager::new(&source, "", &settings)
+            .rename_matching_items(Some("*.txt"), None, true, "renamed-{name}")
+            .unwrap();
+
+        assert!(source.join("renamed-local.txt").exists());
+        assert_eq!(
+            std::fs::read(external.join("outside.txt")).unwrap(),
+            b"keep"
+        );
     }
 }

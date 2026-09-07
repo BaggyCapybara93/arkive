@@ -1,9 +1,10 @@
+use crate::batch_module::{BatchError, Job};
+use indicatif::ProgressBar;
 use std::sync::Arc;
 use std::{
-    sync::{mpsc, Mutex},
+    sync::{Mutex, mpsc},
     thread,
 };
-use crate::batch_module::{Job, BatchError};
 
 pub enum ThreadMessage {
     Job(Job),
@@ -26,7 +27,11 @@ pub struct ThreadPool {
 }
 
 impl ThreadPool {
-    pub fn new(size: usize) -> Self {
+    /// `progress` is the shared batch-level bar (or None if there are no jobs).
+    /// It's captured once here and cloned into every worker thread, so each
+    /// worker can call `.inc(1)` on the SAME underlying bar the instant its
+    /// own job finishes.
+    pub fn new(size: usize, progress: Option<ProgressBar>) -> Self {
         let (sender, receiver) = mpsc::channel::<ThreadMessage>();
         let (result_sender, result_receiver) = mpsc::channel::<ThreadResult>();
         let receiver = Arc::new(Mutex::new(receiver));
@@ -36,6 +41,9 @@ impl ThreadPool {
         for id in 0..size {
             let receiver = Arc::clone(&receiver);
             let result_sender = result_sender.clone();
+            // ProgressBar is internally Arc-backed, so this clone is cheap and
+            // all workers end up incrementing the same visible bar.
+            let progress = progress.clone();
 
             let handle = thread::spawn(move || {
                 loop {
@@ -48,18 +56,18 @@ impl ThreadPool {
                     };
 
                     match message {
-                        Ok(ThreadMessage::Job(job)) => {
-                            match job.execute() {
-                                Ok(_) => {
-                                    let _ = result_sender.send(ThreadResult::Ok);
-                                }
-                                Err(e) => {
-                                    let _ = result_sender.send(ThreadResult::Err(format!("Worker {id} failed to execute job: {e}")));
-                                }
+                        Ok(ThreadMessage::Job(job)) => match job.execute(progress.as_ref()) {
+                            Ok(_) => {
+                                let _ = result_sender.send(ThreadResult::Ok);
                             }
-                        }
+                            Err(e) => {
+                                let _ = result_sender.send(ThreadResult::Err(format!(
+                                    "Worker {id} failed to execute job: {e}"
+                                )));
+                            }
+                        },
 
-                        Ok (ThreadMessage::Shutdown) => break,
+                        Ok(ThreadMessage::Shutdown) => break,
                         Err(_) => break,
                     }
                 }
@@ -68,7 +76,11 @@ impl ThreadPool {
             workers.push(Worker { handle });
         }
 
-        ThreadPool { workers, sender, result_receiver }
+        ThreadPool {
+            workers,
+            sender,
+            result_receiver,
+        }
     }
 
     pub fn join(self) -> Result<(), BatchError> {
@@ -77,7 +89,9 @@ impl ThreadPool {
         }
 
         for worker in self.workers {
-            worker.handle.join()
+            worker
+                .handle
+                .join()
                 .map_err(|_| BatchError::ThreadPool("Worker thread panicked".into()))?;
         }
 
@@ -91,8 +105,8 @@ impl ThreadPool {
     }
 
     pub fn add_job(&self, job: Job) -> Result<(), BatchError> {
-        self.sender.send(ThreadMessage::Job(job))
-                .map_err(|e| BatchError::ThreadPool(e.to_string()))
+        self.sender
+            .send(ThreadMessage::Job(job))
+            .map_err(|e| BatchError::ThreadPool(e.to_string()))
     }
-
 }
