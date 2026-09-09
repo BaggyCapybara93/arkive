@@ -71,6 +71,12 @@ impl From<&IgnoreArgs> for IgnoreOptions {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Initialize or check a filesystem vault, including an OS-mounted SMB/NFS share
+    Vault {
+        #[command(subcommand)]
+        command: VaultCommand,
+    },
+
     /// Move a file or directory
     Move {
         /// Source path
@@ -244,6 +250,14 @@ pub enum IgnoreCommand {
         #[command(flatten)]
         ignore: IgnoreArgs,
     },
+}
+
+#[derive(Subcommand)]
+pub enum VaultCommand {
+    /// Initialize an existing empty directory as a versioned vault
+    Init { path: PathBuf },
+    /// Test read, write, rename, delete, and SHA-256 verification in an existing directory
+    Check { path: PathBuf },
 }
 
 fn handle_move(
@@ -458,6 +472,10 @@ fn handle_list_trash(settings: &Settings) -> Result<(), AppError> {
 
 pub fn cli_handler(cmd: Command, settings: &Settings) -> Result<(), AppError> {
     match cmd {
+        Command::Vault { command } => match command {
+            VaultCommand::Init { path } => crate::vault::init(&path, settings.dry_run),
+            VaultCommand::Check { path } => crate::vault::check(&path, settings.dry_run),
+        },
         Command::Move {
             src,
             dest,

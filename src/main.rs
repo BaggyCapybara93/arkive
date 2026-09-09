@@ -8,6 +8,7 @@ mod metadata_module;
 mod settings;
 #[cfg(test)]
 mod test;
+mod vault;
 
 use crate::cli::cli_handler;
 use crate::config_module::ConfigManager;
@@ -19,7 +20,9 @@ fn main() -> Result<(), AppError> {
     let cli = crate::cli::CLI::parse();
 
     let config_manager = ConfigManager::new()?;
-    config_manager.create_default_config()?;
+    if !cli.dry_run {
+        config_manager.create_default_config()?;
+    }
 
     let config = config_manager.load()?;
 

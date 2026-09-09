@@ -18,6 +18,7 @@ files and directories.
 - Find and remove duplicate files
 - Find unused files and empty directories
 - Create portable backups that can be deployed to their original locations
+- Initialize versioned filesystem vaults and check local or mounted SMB/NFS storage
 
 ## Installation
 
@@ -51,6 +52,58 @@ arkive <COMMAND> --help
 ```
 
 ## Commands
+
+### Filesystem vaults (first milestone)
+
+Vaults are the storage foundation for planned game-save management. Mount an
+SMB or NFS share using your operating system, then give Arkive its local path.
+Arkive does not mount shares or handle network credentials.
+
+Use an **existing, dedicated empty directory** for initialization:
+
+```bash
+# After mounting the share and creating a dedicated directory on it:
+arkive vault check /mnt/saves/arkive
+arkive --dry-run vault init /mnt/saves/arkive
+arkive vault init /mnt/saves/arkive
+arkive vault check /mnt/saves/arkive
+```
+
+`vault init` stages and publishes a version 1 layout under `.arkive-vault/`:
+
+```text
+.arkive-vault/
+  vault.json       # Format name, version, and creation time
+  objects/         # Reserved for future save objects
+  snapshots/       # Reserved for future snapshot manifests
+  profiles/        # Reserved for future game profiles
+```
+
+Repeating initialization validates the existing vault without rewriting it.
+Unknown versions, malformed manifests, incomplete layouts, and symlinked vault
+roots or layout entries are rejected. Missing target directories are never
+created, which helps avoid accidentally recreating an unavailable mount path.
+An existing local mountpoint can still be unmounted: confirm the mount yourself.
+
+`vault check` works before or after initialization. It writes and flushes a
+temporary 64 KiB binary probe, verifies SHA-256 after writing and file/directory
+renames, checks exclusive file creation and deletion, and cleans up its scratch data.
+Existing files are preserved. In an initialized vault it also validates the
+manifest and required directories. `--dry-run` validates paths and structure
+without writing probe data or claiming the filesystem check passed.
+
+Both commands reserve `.arkive-vault.lock/` in the target directory to exclude
+other cooperating Arkive vault operations. An occupied lock causes an error;
+Arkive never automatically breaks it. After an interruption, confirm that all
+clients have stopped before manually removing a leftover lock. Inspect leftover
+`.arkive-tmp-*-vault/` staging directories before removing them; initialization
+refuses to proceed in a directory containing unfinished staging data.
+
+A passing check covers this client's filesystem operations. It does **not**
+prove mount identity, cross-machine locking/cache consistency, or durability
+after a server crash. Vault checks do not hash stored save objects. Game
+profiles, snapshots, restore, synchronization, conflict handling, and encryption
+are future milestones; existing file commands do not use the vault lock.
 
 ### Move
 
