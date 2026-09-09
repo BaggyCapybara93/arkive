@@ -469,7 +469,7 @@ cargo clippy --all-targets
 
 ## License
 
-Arkive is licensed under the MIT License. See [LICENSE](LICENSE).
+Arkive is licensed under the Zero-Clause BSD (0BSD) license. See [LICENSE](LICENSE).
 
 ## Contributing
 
