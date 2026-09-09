@@ -19,6 +19,7 @@ files and directories.
 - Find unused files and empty directories
 - Create portable backups that can be deployed to their original locations
 - Initialize versioned filesystem vaults and check local or mounted SMB/NFS storage
+- Capture immutable save snapshots, reuse identical files, and verify snapshot integrity
 
 ## Installation
 
@@ -53,7 +54,7 @@ arkive <COMMAND> --help
 
 ## Commands
 
-### Filesystem vaults (first milestone)
+### Filesystem vaults
 
 Vaults are the storage foundation for planned game-save management. Mount an
 SMB or NFS share using your operating system, then give Arkive its local path.
@@ -74,8 +75,8 @@ arkive vault check /mnt/saves/arkive
 ```text
 .arkive-vault/
   vault.json       # Format name, version, and creation time
-  objects/         # Reserved for future save objects
-  snapshots/       # Reserved for future snapshot manifests
+  objects/         # <file-sha256>/data
+  snapshots/       # <manifest-sha256>/manifest.json
   profiles/        # Reserved for future game profiles
 ```
 
@@ -92,7 +93,8 @@ Existing files are preserved. In an initialized vault it also validates the
 manifest and required directories. `--dry-run` validates paths and structure
 without writing probe data or claiming the filesystem check passed.
 
-Both commands reserve `.arkive-vault.lock/` in the target directory to exclude
+Initialization, filesystem checks, and snapshot creation reserve
+`.arkive-vault.lock/` in the target directory to exclude
 other cooperating Arkive vault operations. An occupied lock causes an error;
 Arkive never automatically breaks it. After an interruption, confirm that all
 clients have stopped before manually removing a leftover lock. Inspect leftover
@@ -102,8 +104,55 @@ refuses to proceed in a directory containing unfinished staging data.
 A passing check covers this client's filesystem operations. It does **not**
 prove mount identity, cross-machine locking/cache consistency, or durability
 after a server crash. Vault checks do not hash stored save objects. Game
-profiles, snapshots, restore, synchronization, conflict handling, and encryption
+profiles, restore, synchronization, conflict handling, and encryption
 are future milestones; existing file commands do not use the vault lock.
+
+### Save snapshots
+
+Close the game, then capture a save file or directory into an initialized vault:
+
+```bash
+arkive vault snapshot /mnt/saves/arkive ./my-game-saves --label "Before boss fight"
+arkive vault snapshots /mnt/saves/arkive
+arkive vault snapshots /mnt/saves/arkive --json
+arkive vault verify-snapshot /mnt/saves/arkive SNAPSHOT_ID
+arkive --dry-run vault snapshot /mnt/saves/arkive ./my-game-saves
+```
+
+`SNAPSHOT_ID` is the full 64-character ID printed after creation or in history.
+History is newest first; `--json` includes complete manifests and file hashes.
+Listing validates manifest structure and hashes. `verify-snapshot` also reads
+and verifies every referenced object's SHA-256 and size. These two commands
+are read-only and can read published snapshots while a new one is being created.
+
+Each snapshot records its creation time, optional label, source file/directory
+name, relative paths, empty directories, file sizes, and SHA-256 hashes. A
+single file uses an empty relative path for its root entry. Labels may contain
+up to 256 UTF-8 bytes. Identical files share one object across all snapshots;
+captures record history without rewriting older snapshots.
+The vault remains version 1; snapshot manifests have their
+own `arkive-snapshot` format and version 1 schema.
+
+Arkive streams files into temporary storage, flushes and verifies them, then
+publishes objects and finally the manifest. It verifies existing objects before
+reusing them and refuses to overwrite corrupt data. A failed capture can leave
+verified, unreferenced objects that a later capture can reuse; automatic pruning
+is not implemented. Keep the whole vault together: manifests depend on objects.
+
+The source is scanned again before publication. Detected content or tree changes
+abort the snapshot, but this is **not an atomic filesystem snapshot**: keep the
+game and other save writers closed throughout capture. Sources and vaults must
+not overlap. Symlinks and special files are rejected; paths must be UTF-8, with
+no backslashes or colons in names. Snapshots include all regular files, including
+hidden files; Arkive ignore rules and general copy/compression settings do not
+apply. Permissions, ownership, timestamps, ACLs, and extended attributes are
+not captured. Limits are 100,000 entries, 128 path components below the source,
+and a 16 MiB manifest.
+
+Dry runs scan and hash the source and check any reusable objects, but do not
+write objects, manifests, or locks. Snapshot contents and labels are currently
+unencrypted. This milestone captures and verifies snapshots; restoring them to
+live saves is not implemented yet.
 
 ### Move
 

@@ -71,7 +71,7 @@ impl From<&IgnoreArgs> for IgnoreOptions {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Initialize or check a filesystem vault, including an OS-mounted SMB/NFS share
+    /// Manage a filesystem vault, including an OS-mounted SMB/NFS share
     Vault {
         #[command(subcommand)]
         command: VaultCommand,
@@ -258,6 +258,23 @@ pub enum VaultCommand {
     Init { path: PathBuf },
     /// Test read, write, rename, delete, and SHA-256 verification in an existing directory
     Check { path: PathBuf },
+    /// Snapshot a save file or directory into an initialized vault
+    Snapshot {
+        path: PathBuf,
+        source: PathBuf,
+        /// Optional description (up to 256 UTF-8 bytes)
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// List snapshot history (manifest integrity is checked; objects are not read)
+    Snapshots {
+        path: PathBuf,
+        /// Print complete snapshot manifests as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Verify a snapshot manifest and every referenced save object
+    VerifySnapshot { path: PathBuf, snapshot: String },
 }
 
 fn handle_move(
@@ -475,6 +492,15 @@ pub fn cli_handler(cmd: Command, settings: &Settings) -> Result<(), AppError> {
         Command::Vault { command } => match command {
             VaultCommand::Init { path } => crate::vault::init(&path, settings.dry_run),
             VaultCommand::Check { path } => crate::vault::check(&path, settings.dry_run),
+            VaultCommand::Snapshot {
+                path,
+                source,
+                label,
+            } => crate::vault::snapshots::create(&path, &source, label, settings.dry_run),
+            VaultCommand::Snapshots { path, json } => crate::vault::snapshots::list(&path, json),
+            VaultCommand::VerifySnapshot { path, snapshot } => {
+                crate::vault::snapshots::verify(&path, &snapshot)
+            }
         },
         Command::Move {
             src,
