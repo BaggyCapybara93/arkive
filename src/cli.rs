@@ -275,6 +275,14 @@ pub enum VaultCommand {
     },
     /// Verify a snapshot manifest and every referenced save object
     VerifySnapshot { path: PathBuf, snapshot: String },
+    /// Restore a snapshot into a new, explicit destination directory
+    Restore {
+        path: PathBuf,
+        /// Full 64-character snapshot ID
+        snapshot: String,
+        /// New directory that will receive the restored save; it must not already exist
+        destination: PathBuf,
+    },
 }
 
 fn handle_move(
@@ -501,6 +509,11 @@ pub fn cli_handler(cmd: Command, settings: &Settings) -> Result<(), AppError> {
             VaultCommand::VerifySnapshot { path, snapshot } => {
                 crate::vault::snapshots::verify(&path, &snapshot)
             }
+            VaultCommand::Restore {
+                path,
+                snapshot,
+                destination,
+            } => crate::vault::snapshots::restore(&path, &snapshot, &destination, settings.dry_run),
         },
         Command::Move {
             src,

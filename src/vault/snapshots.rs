@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 
 use super::{CONTROL, VaultLock, combine, exists, invalid, io_at, require_directory};
 use crate::error::AppError;
+use crate::file_module::ops::create_temp_dir_sibling;
 
 const FORMAT: &str = "arkive-snapshot";
 const VERSION: u32 = 1;
@@ -562,9 +563,7 @@ pub fn list(path: &Path, json: bool) -> Result<(), AppError> {
     Ok(())
 }
 
-pub fn verify(path: &Path, id: &str) -> Result<(), AppError> {
-    let root = initialized(path)?;
-    let snapshot = load(&root, id)?;
+fn verify_loaded(root: &Path, snapshot: &Snapshot) -> Result<usize, AppError> {
     let mut verified = BTreeSet::new();
     for entry in &snapshot.manifest.entries {
         if let Entry::File { sha256, size, .. } = entry
@@ -573,9 +572,138 @@ pub fn verify(path: &Path, id: &str) -> Result<(), AppError> {
             verify_object(&root, sha256, *size)?;
         }
     }
+    Ok(verified.len())
+}
+
+pub fn verify(path: &Path, id: &str) -> Result<(), AppError> {
+    let root = initialized(path)?;
+    let snapshot = load(&root, id)?;
+    let verified = verify_loaded(&root, &snapshot)?;
     println!(
         "Snapshot {id} verified: manifest and {} unique objects passed SHA-256 checks",
-        verified.len()
+        verified
     );
+    Ok(())
+}
+
+fn destination(path: &Path) -> Result<PathBuf, AppError> {
+    let path: PathBuf = path.components().collect();
+    if exists(&path)? {
+        return Err(invalid(format!(
+            "Restore destination already exists and will not be overwritten: {path:?}"
+        )));
+    }
+    let parent = path.parent().ok_or_else(|| {
+        invalid("Restore destination must name a new directory below an existing directory")
+    })?;
+    require_directory(parent)?;
+    let parent = io_at(
+        fs::canonicalize(parent),
+        "resolve restore destination parent",
+        parent,
+    )?;
+    let name = path.file_name().ok_or_else(|| {
+        invalid("Restore destination must name a new directory below an existing directory")
+    })?;
+    Ok(parent.join(name))
+}
+
+fn restore_file(root: &Path, destination: &Path, hash: &str, size: u64) -> Result<(), AppError> {
+    verify_object(root, hash, size)?;
+    let source = object_path(root, hash).join("data");
+    let mut output = io_at(
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(destination),
+        "create restored file without overwriting",
+        destination,
+    )?;
+    let captured = hash_file(&source, Some(&mut output))?;
+    io_at(output.sync_all(), "flush restored file", destination)?;
+    drop(output);
+    if captured != (hash.into(), size) || hash_file(destination, None)? != captured {
+        return Err(invalid(format!(
+            "SHA-256 verification failed while restoring {destination:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn materialize(root: &Path, snapshot: &Snapshot, staged: &Path) -> Result<(), AppError> {
+    for entry in &snapshot.manifest.entries {
+        match entry {
+            Entry::Directory { path } if path.is_empty() => {}
+            Entry::Directory { path } => {
+                let directory = staged.join(path);
+                io_at(
+                    fs::create_dir(&directory),
+                    "create restored directory",
+                    &directory,
+                )?;
+            }
+            Entry::File { path, sha256, size } => {
+                let file = if path.is_empty() {
+                    staged.join(&snapshot.manifest.source_name)
+                } else {
+                    staged.join(path)
+                };
+                restore_file(root, &file, sha256, *size)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn restore_staged(root: &Path, snapshot: &Snapshot, destination: &Path) -> Result<(), AppError> {
+    let staged = create_temp_dir_sibling(destination)?;
+    let result = (|| {
+        materialize(root, snapshot, &staged)?;
+        publish(&staged, destination)
+    })();
+    let cleanup = match fs::remove_dir_all(&staged) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => io_at(Err(error), "remove failed restore staging", &staged),
+    };
+    combine(result, cleanup)
+}
+
+/// Restore into a new directory only. The caller must explicitly select a safe
+/// test or replacement directory; live saves are never overwritten implicitly.
+pub fn restore(path: &Path, id: &str, target: &Path, dry_run: bool) -> Result<(), AppError> {
+    let root = initialized(path)?;
+    let destination = destination(target)?;
+    if destination.starts_with(&root) {
+        return Err(invalid("Restore destination must not be inside the vault"));
+    }
+    if dry_run {
+        super::ensure_unlocked(&root)?;
+        let snapshot = load(&root, id)?;
+        verify_loaded(&root, &snapshot)?;
+        let (files, bytes) = totals(&snapshot.manifest)?;
+        println!(
+            "[DRY-RUN] Would restore snapshot {id} to {destination:?}: {files} files, {bytes} bytes; no files written"
+        );
+        return Ok(());
+    }
+    let lock = VaultLock::acquire(&root)?;
+    let result = (|| {
+        initialized(&root)?;
+        let snapshot = load(&root, id)?;
+        verify_loaded(&root, &snapshot)?;
+        // Check again immediately before publication in case another process
+        // created the requested directory after the initial validation.
+        if exists(&destination)? {
+            return Err(invalid(format!(
+                "Restore destination already exists and will not be overwritten: {destination:?}"
+            )));
+        }
+        restore_staged(&root, &snapshot, &destination)
+    })();
+    combine(result, lock.release())?;
+    let snapshot = load(&root, id)?;
+    let (files, bytes) = totals(&snapshot.manifest)?;
+    println!("Snapshot {id} restored to {destination:?}: {files} files, {bytes} bytes");
     Ok(())
 }

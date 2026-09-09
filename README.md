@@ -116,7 +116,9 @@ arkive vault snapshot /mnt/saves/arkive ./my-game-saves --label "Before boss fig
 arkive vault snapshots /mnt/saves/arkive
 arkive vault snapshots /mnt/saves/arkive --json
 arkive vault verify-snapshot /mnt/saves/arkive SNAPSHOT_ID
+arkive vault restore /mnt/saves/arkive SNAPSHOT_ID /tmp/arkive-restore-test
 arkive --dry-run vault snapshot /mnt/saves/arkive ./my-game-saves
+arkive --dry-run vault restore /mnt/saves/arkive SNAPSHOT_ID /tmp/arkive-restore-test
 ```
 
 `SNAPSHOT_ID` is the full 64-character ID printed after creation or in history.
@@ -149,10 +151,17 @@ apply. Permissions, ownership, timestamps, ACLs, and extended attributes are
 not captured. Limits are 100,000 entries, 128 path components below the source,
 and a 16 MiB manifest.
 
+`vault restore` verifies every referenced object and restores the snapshot into
+a **new, explicit destination directory**. It refuses an existing destination,
+including an empty one, and stages the complete restore beside it before an
+atomic publish. This makes a new test directory (such as
+`/tmp/arkive-restore-test`) the intended first restore target; Arkive never
+automatically replaces a live save. A single-file snapshot is restored as a
+file named after its original source inside that destination directory.
+
 Dry runs scan and hash the source and check any reusable objects, but do not
-write objects, manifests, or locks. Snapshot contents and labels are currently
-unencrypted. This milestone captures and verifies snapshots; restoring them to
-live saves is not implemented yet.
+write objects, manifests, restores, or locks. Snapshot contents and labels are
+currently unencrypted.
 
 ### Move
 

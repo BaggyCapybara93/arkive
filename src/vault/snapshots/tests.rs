@@ -103,6 +103,75 @@ fn empty_directory_is_a_valid_snapshot() {
 }
 
 #[test]
+fn restore_recreates_directory_and_file_snapshots_without_overwriting() {
+    let (temp, vault, saves) = setup("snapshot-restore");
+    fs::create_dir_all(saves.join("nested/empty")).unwrap();
+    fs::write(saves.join("save.bin"), b"before boss").unwrap();
+    create(&vault, &saves, None, false).unwrap();
+    let directory_snapshot = history(&vault).unwrap().remove(0);
+
+    let restored = temp.path().join("restored-directory");
+    restore(&vault, &directory_snapshot.id, &restored, false).unwrap();
+    assert_eq!(fs::read(restored.join("save.bin")).unwrap(), b"before boss");
+    assert!(restored.join("nested/empty").is_dir());
+    assert!(restore(&vault, &directory_snapshot.id, &restored, false).is_err());
+    assert_eq!(fs::read(restored.join("save.bin")).unwrap(), b"before boss");
+
+    let file = saves.join("single.dat");
+    fs::write(&file, b"single save").unwrap();
+    create(&vault, &file, None, false).unwrap();
+    let file_snapshot = history(&vault)
+        .unwrap()
+        .into_iter()
+        .find(|snapshot| snapshot.manifest.source_name == "single.dat")
+        .unwrap();
+    let restored_file = temp.path().join("restored-file");
+    restore(&vault, &file_snapshot.id, &restored_file, false).unwrap();
+    assert_eq!(
+        fs::read(restored_file.join("single.dat")).unwrap(),
+        b"single save"
+    );
+    clean_root(&vault);
+}
+
+#[test]
+fn failed_restore_leaves_no_destination_or_staging_data() {
+    let (temp, vault, saves) = setup("snapshot-restore-failure");
+    fs::write(saves.join("save.bin"), b"save").unwrap();
+    create(&vault, &saves, None, false).unwrap();
+    let snapshot = history(&vault).unwrap().remove(0);
+    let object = object_path(&vault, &hex(&Sha256::digest(b"save"))).join("data");
+    fs::write(&object, b"corrupt").unwrap();
+
+    let destination = temp.path().join("failed-restore");
+    assert!(restore(&vault, &snapshot.id, &destination, false).is_err());
+    assert!(!destination.exists());
+    assert!(fs::read_dir(temp.path()).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".arkive-tmp-")
+    }));
+    clean_root(&vault);
+}
+
+#[test]
+fn restore_dry_run_and_vault_targets_are_rejected_without_writes() {
+    let (temp, vault, saves) = setup("snapshot-restore-dry-run");
+    fs::write(saves.join("save.bin"), b"save").unwrap();
+    create(&vault, &saves, None, false).unwrap();
+    let snapshot = history(&vault).unwrap().remove(0);
+    let destination = temp.path().join("dry-run-restore");
+
+    restore(&vault, &snapshot.id, &destination, true).unwrap();
+    assert!(!destination.exists());
+    assert!(restore(&vault, &snapshot.id, &vault.join("inside"), false).is_err());
+    assert!(restore(&vault, &snapshot.id, temp.path(), false).is_err());
+    clean_root(&vault);
+}
+
+#[test]
 fn dry_run_does_not_write_and_still_detects_corrupt_reused_objects() {
     let (_temp, vault, saves) = setup("snapshot-dry");
     fs::write(saves.join("save.bin"), b"save").unwrap();
@@ -340,7 +409,13 @@ fn special_files_are_rejected_without_snapshot() {
     use std::os::unix::net::UnixListener;
     // Keep the path within macOS's Unix socket path limit.
     let (_temp, vault, saves) = setup("snap-socket");
-    let _socket = UnixListener::bind(saves.join("socket")).unwrap();
+    let _socket = match UnixListener::bind(saves.join("socket")) {
+        Ok(socket) => socket,
+        // Some CI sandboxes prohibit Unix-domain sockets entirely. That is a
+        // runner capability limit, not a meaningful snapshot test failure.
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return,
+        Err(error) => panic!("create Unix socket fixture: {error}"),
+    };
     assert!(create(&vault, &saves, None, false).is_err());
     assert_eq!(count(&vault, "snapshots"), 0);
     clean_root(&vault);
