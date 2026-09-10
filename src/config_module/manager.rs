@@ -13,13 +13,10 @@ impl ConfigManager {
     /// Config is stored in the same directory as the executable
     pub fn new() -> Result<Self, ConfigError> {
         let exe_dir = env::current_exe()
-            .map_err(ConfigError::PathError)?
+            .map_err(ConfigError::Path)?
             .parent()
             .ok_or_else(|| {
-                ConfigError::PathError(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "Executable has no parent directory",
-                ))
+                ConfigError::Path(std::io::Error::other("Executable has no parent directory"))
             })?
             .to_path_buf();
 
@@ -31,10 +28,9 @@ impl ConfigManager {
     /// Load configuration from file
     pub fn load(&self) -> Result<Config, ConfigError> {
         if self.config_path.exists() {
-            let content =
-                std::fs::read_to_string(&self.config_path).map_err(ConfigError::ReadError)?;
+            let content = std::fs::read_to_string(&self.config_path).map_err(ConfigError::Read)?;
 
-            let config = serde_json::from_str(&content).map_err(ConfigError::ParseError)?;
+            let config = serde_json::from_str(&content).map_err(ConfigError::Parse)?;
 
             return Ok(config);
         }
@@ -49,11 +45,10 @@ impl ConfigManager {
         let mut config_to_save = config.clone();
         config_to_save.updated_at = chrono::Utc::now();
 
-        let content = serde_json::to_string_pretty(&config_to_save).map_err(|e| {
-            ConfigError::WriteError(std::io::Error::new(std::io::ErrorKind::Other, e))
-        })?;
+        let content = serde_json::to_string_pretty(&config_to_save)
+            .map_err(|e| ConfigError::Write(std::io::Error::other(e)))?;
 
-        std::fs::write(&self.config_path, content).map_err(ConfigError::WriteError)?;
+        std::fs::write(&self.config_path, content).map_err(ConfigError::Write)?;
 
         Ok(())
     }

@@ -277,26 +277,26 @@ impl<'a> FileManager<'a> {
             let dest_file = actual_destination.clone();
 
             // Check if file already exists in metadata (skip if duplicate)
-            if self.settings.enable_metadata && !self.settings.dry_run {
-                if let Ok(manager) = self.metadata_manager_for_destination(&dest_file) {
-                    if let Ok(Some(_existing)) = manager.find_metadata(&dest_file) {
-                        if self.settings.verbose {
-                            println!(
-                                "File {:?} already exists in metadata, skipping copy",
-                                dest_file
-                            );
-                        }
-
-                        // Save updated metadata
-                        self.save_metadata_for_file(&dest_file, &manager)?;
-
-                        if self.settings.verbose {
-                            println!("Copied {:?} to {:?}", src, dst);
-                        }
-
-                        return Ok((dest_file, ignore_stats));
-                    }
+            if self.settings.enable_metadata
+                && !self.settings.dry_run
+                && let Ok(manager) = self.metadata_manager_for_destination(&dest_file)
+                && let Ok(Some(_existing)) = manager.find_metadata(&dest_file)
+            {
+                if self.settings.verbose {
+                    println!(
+                        "File {:?} already exists in metadata, skipping copy",
+                        dest_file
+                    );
                 }
+
+                // Save updated metadata
+                self.save_metadata_for_file(&dest_file, &manager)?;
+
+                if self.settings.verbose {
+                    println!("Copied {:?} to {:?}", src, dst);
+                }
+
+                return Ok((dest_file, ignore_stats));
             }
 
             copy_file_verified(src, &dest_file)?;

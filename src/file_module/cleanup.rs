@@ -16,7 +16,7 @@ impl<'a> FileManager<'a> {
     /// - scan_empty_dirs: Scan for and remove empty directories
     pub fn cleanup(&self, options: CleanupOptions) -> Result<(), FileManagerError> {
         if options.empty_trash {
-            FileManager::empty_trash(&self.settings)?;
+            FileManager::empty_trash(self.settings)?;
         }
 
         if options.deduplicate {
@@ -81,20 +81,20 @@ impl<'a> FileManager<'a> {
         settings: &FileManager<'_>,
         unused_files: &mut Vec<PathBuf>,
     ) -> Result<(), FileManagerError> {
-        if let Ok(metadata) = fs::metadata(path) {
-            if let Ok(accessed) = metadata.accessed() {
-                let elapsed = now
-                    .duration_since(accessed)
-                    .map_err(|e| FileManagerError::InvalidInput(e.to_string()))?;
-                let elapsed_secs = elapsed.as_secs();
+        if let Ok(metadata) = fs::metadata(path)
+            && let Ok(accessed) = metadata.accessed()
+        {
+            let elapsed = now
+                .duration_since(accessed)
+                .map_err(|e| FileManagerError::InvalidInput(e.to_string()))?;
+            let elapsed_secs = elapsed.as_secs();
 
-                if elapsed_secs > thirty_days {
-                    if settings.settings.verbose {
-                        println!("Found unused file (not accessed in 30+ days): {:?}", path);
-                    }
-                    // Actually record the match instead of discarding it.
-                    unused_files.push(path.clone());
+            if elapsed_secs > thirty_days {
+                if settings.settings.verbose {
+                    println!("Found unused file (not accessed in 30+ days): {:?}", path);
                 }
+                // Actually record the match instead of discarding it.
+                unused_files.push(path.clone());
             }
         }
         Ok(())
@@ -211,17 +211,14 @@ impl<'a> FileManager<'a> {
                         // wrongly see it as "not empty" and this parent would
                         // never be flagged. Exclude anything already queued
                         // for removal from the count.
-                        match fs::read_dir(&entry_path) {
-                            Ok(sub_entries) => {
-                                let remaining = sub_entries
-                                    .filter_map(|e| e.ok())
-                                    .filter(|e| !empty_dirs.contains(&e.path()))
-                                    .count();
-                                if remaining == 0 {
-                                    empty_dirs.push(entry_path.clone());
-                                }
+                        if let Ok(sub_entries) = fs::read_dir(&entry_path) {
+                            let remaining = sub_entries
+                                .filter_map(|e| e.ok())
+                                .filter(|e| !empty_dirs.contains(&e.path()))
+                                .count();
+                            if remaining == 0 {
+                                empty_dirs.push(entry_path.clone());
                             }
-                            Err(_) => {}
                         }
                     }
 

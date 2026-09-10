@@ -17,7 +17,7 @@ use crate::settings::Settings;
 use clap::Parser;
 
 fn main() -> Result<(), AppError> {
-    let cli = crate::cli::CLI::parse();
+    let cli = crate::cli::Cli::parse();
 
     let config_manager = ConfigManager::new()?;
     if !cli.dry_run {

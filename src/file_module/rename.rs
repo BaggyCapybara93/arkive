@@ -164,9 +164,8 @@ impl<'a> FileManager<'a> {
 
     fn rename_glob_to_regex(pattern: &str) -> String {
         let mut regex = String::from("^");
-        let mut chars = pattern.chars().peekable();
 
-        while let Some(ch) = chars.next() {
+        for ch in pattern.chars() {
             match ch {
                 '*' => regex.push_str(".*"),
                 '?' => regex.push('.'),

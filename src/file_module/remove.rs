@@ -158,7 +158,7 @@ impl<'a> FileManager<'a> {
         for c in pattern.chars() {
             match c {
                 '*' => regex.push_str(".*"),
-                '?' => regex.push_str("."),
+                '?' => regex.push('.'),
                 '[' => regex.push_str(r"\["),
                 ']' => regex.push_str(r"\]"),
                 '(' => regex.push_str(r"\("),

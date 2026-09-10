@@ -54,7 +54,7 @@ impl MetadataManager {
         };
 
         let local = LocalMetadataManager::new(shard_path);
-        Ok(local.get(&canonical)?)
+        local.get(&canonical)
     }
 
     /// Remove an entry by a canonical path captured before a file operation.

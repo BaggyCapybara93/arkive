@@ -25,7 +25,7 @@ pub struct BatchHandler {
 
 impl BatchHandler {
     pub fn new(commands: Vec<Job>, settings: &Settings) -> Self {
-        let settings = Arc::new(settings.clone());
+        let settings = Arc::new(*settings);
         let commands = commands
             .into_iter()
             .map(|mut job| {
@@ -44,7 +44,7 @@ impl BatchHandler {
                 .operations
                 .into_iter()
                 .map(|mut job| {
-                    job.settings = Some(Arc::new(settings.clone()));
+                    job.settings = Some(Arc::new(*settings));
                     job
                 })
                 .collect();

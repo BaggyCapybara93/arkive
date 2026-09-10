@@ -569,7 +569,7 @@ fn verify_loaded(root: &Path, snapshot: &Snapshot) -> Result<usize, AppError> {
         if let Entry::File { sha256, size, .. } = entry
             && verified.insert((sha256, size))
         {
-            verify_object(&root, sha256, *size)?;
+            verify_object(root, sha256, *size)?;
         }
     }
     Ok(verified.len())

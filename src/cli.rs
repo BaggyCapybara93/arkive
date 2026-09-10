@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(name = "arkive", about = "A simple file management tool")]
-pub struct CLI {
+pub struct Cli {
     #[arg(long, help = "Disable trash, permanently delete files")]
     pub no_trash: bool,
 

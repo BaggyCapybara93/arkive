@@ -10,7 +10,7 @@ impl<'a> FileManager<'a> {
         &self,
         _dst: &Path,
     ) -> Result<MetadataManager, FileManagerError> {
-        Ok(MetadataManager::new().map_err(|e| FileManagerError::InvalidInput(e.to_string()))?)
+        MetadataManager::new().map_err(|e| FileManagerError::InvalidInput(e.to_string()))
     }
 
     pub(crate) fn save_metadata_for_file(
