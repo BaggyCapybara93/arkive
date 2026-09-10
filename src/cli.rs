@@ -22,9 +22,6 @@ pub struct Cli {
     #[arg(long, help = "Preview operations without executing")]
     pub dry_run: bool,
 
-    #[arg(long, help = "Path to use as last used directory for config")]
-    pub last_used_directory: Option<PathBuf>,
-
     #[command(subcommand)]
     pub command: Command,
 }
@@ -275,6 +272,26 @@ pub enum VaultCommand {
     },
     /// Verify a snapshot manifest and every referenced save object
     VerifySnapshot { path: PathBuf, snapshot: String },
+    /// Compare a save source with a selected snapshot
+    Diff {
+        path: PathBuf,
+        /// Full 64-character snapshot ID
+        snapshot: String,
+        /// Current save file or directory to compare
+        source: PathBuf,
+        /// Print the comparison as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Compare a save source with the newest snapshot
+    Status {
+        path: PathBuf,
+        /// Current save file or directory to compare
+        source: PathBuf,
+        /// Print the comparison as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Restore a snapshot into a new, explicit destination directory
     Restore {
         path: PathBuf,
@@ -508,6 +525,15 @@ pub fn cli_handler(cmd: Command, settings: &Settings) -> Result<(), AppError> {
             VaultCommand::Snapshots { path, json } => crate::vault::snapshots::list(&path, json),
             VaultCommand::VerifySnapshot { path, snapshot } => {
                 crate::vault::snapshots::verify(&path, &snapshot)
+            }
+            VaultCommand::Diff {
+                path,
+                snapshot,
+                source,
+                json,
+            } => crate::vault::snapshots::diff(&path, &snapshot, &source, json),
+            VaultCommand::Status { path, source, json } => {
+                crate::vault::snapshots::status(&path, &source, json)
             }
             VaultCommand::Restore {
                 path,

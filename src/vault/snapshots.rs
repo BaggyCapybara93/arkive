@@ -575,6 +575,159 @@ fn verify_loaded(root: &Path, snapshot: &Snapshot) -> Result<usize, AppError> {
     Ok(verified.len())
 }
 
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum ChangeKind {
+    Added,
+    Modified,
+    Removed,
+}
+
+#[derive(Debug, Serialize)]
+struct Change {
+    change: ChangeKind,
+    path: String,
+    previous: Option<Entry>,
+    current: Option<Entry>,
+}
+
+#[derive(Debug, Serialize)]
+struct DiffReport {
+    snapshot: Option<String>,
+    source: String,
+    changes: Vec<Change>,
+}
+
+fn compare_entries(previous: &[Entry], current: &[Entry]) -> Vec<Change> {
+    let previous: BTreeMap<_, _> = previous
+        .iter()
+        .map(|entry| (entry.path().to_owned(), entry.clone()))
+        .collect();
+    let current: BTreeMap<_, _> = current
+        .iter()
+        .map(|entry| (entry.path().to_owned(), entry.clone()))
+        .collect();
+    let paths: BTreeSet<_> = previous.keys().chain(current.keys()).cloned().collect();
+
+    paths
+        .into_iter()
+        .filter_map(|path| {
+            let old = previous.get(&path);
+            let new = current.get(&path);
+            let change = match (old, new) {
+                (Some(old), Some(new)) if old == new => return None,
+                (Some(_), Some(_)) => ChangeKind::Modified,
+                (None, Some(_)) => ChangeKind::Added,
+                (Some(_), None) => ChangeKind::Removed,
+                (None, None) => return None,
+            };
+            Some(Change {
+                change,
+                path,
+                previous: old.cloned(),
+                current: new.cloned(),
+            })
+        })
+        .collect()
+}
+
+fn comparison_source(root: &Path, source: &Path) -> Result<PathBuf, AppError> {
+    let source: PathBuf = source.components().collect();
+    let metadata = io_at(
+        fs::symlink_metadata(&source),
+        "inspect comparison source",
+        &source,
+    )?;
+    if metadata.file_type().is_symlink() || (!metadata.is_file() && !metadata.is_dir()) {
+        return Err(invalid(
+            "Comparison source must be a regular file or directory, not a symlink",
+        ));
+    }
+    let source = fs::canonicalize(&source)?;
+    if source.starts_with(root) || root.starts_with(&source) {
+        return Err(invalid("Comparison source and vault must not overlap"));
+    }
+    Ok(source)
+}
+
+fn build_report(
+    root: &Path,
+    snapshot: Option<&Snapshot>,
+    source: &Path,
+) -> Result<DiffReport, AppError> {
+    let source = comparison_source(root, source)?;
+    let current = scan(&source)?;
+    let (snapshot, changes) = match snapshot {
+        Some(snapshot) => (
+            Some(snapshot.id.clone()),
+            compare_entries(&snapshot.manifest.entries, &current),
+        ),
+        None => (None, Vec::new()),
+    };
+    Ok(DiffReport {
+        snapshot,
+        source: source.display().to_string(),
+        changes,
+    })
+}
+
+fn entry_kind(entry: &Entry) -> &'static str {
+    match entry {
+        Entry::Directory { .. } => "directory",
+        Entry::File { .. } => "file",
+    }
+}
+
+fn print_report(report: &DiffReport, json: bool) -> Result<(), AppError> {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(report).map_err(|error| invalid(error.to_string()))?
+        );
+        return Ok(());
+    }
+
+    let Some(snapshot) = &report.snapshot else {
+        println!("No snapshots available for {:?}", report.source);
+        return Ok(());
+    };
+    if report.changes.is_empty() {
+        println!("Snapshot {snapshot} matches {:?}", report.source);
+        return Ok(());
+    }
+
+    println!(
+        "Snapshot {snapshot} differs from {:?}: {} change(s)",
+        report.source,
+        report.changes.len()
+    );
+    for change in &report.changes {
+        let entry = change.current.as_ref().or(change.previous.as_ref());
+        let kind = entry.map(entry_kind).unwrap_or("unknown");
+        let path = if change.path.is_empty() {
+            "."
+        } else {
+            &change.path
+        };
+        println!("{:?} {kind} {path:?}", change.change);
+    }
+    Ok(())
+}
+
+pub fn diff(path: &Path, id: &str, source: &Path, json: bool) -> Result<(), AppError> {
+    let root = initialized(path)?;
+    let snapshot = load(&root, id)?;
+    let report = build_report(&root, Some(&snapshot), source)?;
+    print_report(&report, json)
+}
+
+pub fn status(path: &Path, source: &Path, json: bool) -> Result<(), AppError> {
+    let root = initialized(path)?;
+    let snapshots = history(&root)?;
+    let report = build_report(&root, snapshots.first(), source)?;
+    print_report(&report, json)
+}
+
 pub fn verify(path: &Path, id: &str) -> Result<(), AppError> {
     let root = initialized(path)?;
     let snapshot = load(&root, id)?;

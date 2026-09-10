@@ -15,6 +15,7 @@ and local-first game-save storage.
 - Run file operations from JSON batch files
 - Initialize filesystem-backed vaults and check local or OS-mounted SMB/NFS paths
 - Capture immutable, deduplicated save snapshots and restore them safely
+- Compare current saves with a selected or newest snapshot
 
 Vaults currently store snapshots and verified content-addressed objects. Game
 profiles, synchronization, conflict handling, and encryption are planned but
@@ -50,6 +51,7 @@ arkive vault check /mnt/saves/arkive
 arkive vault snapshot /mnt/saves/arkive ./saves --label "Before boss fight"
 arkive vault snapshots /mnt/saves/arkive
 arkive vault verify-snapshot /mnt/saves/arkive SNAPSHOT_ID
+arkive vault status /mnt/saves/arkive ./saves
 ```
 
 For a mounted SMB or NFS share, mount it with the operating system first and

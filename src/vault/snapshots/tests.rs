@@ -103,6 +103,64 @@ fn empty_directory_is_a_valid_snapshot() {
 }
 
 #[test]
+fn diff_reports_added_modified_and_removed_entries() {
+    let (_temp, vault, saves) = setup("snapshot-diff");
+    fs::write(saves.join("modified.txt"), b"before").unwrap();
+    fs::write(saves.join("removed.txt"), b"removed").unwrap();
+    fs::create_dir(saves.join("removed-empty")).unwrap();
+    create(&vault, &saves, None, false).unwrap();
+    let snapshot = history(&vault).unwrap().remove(0);
+
+    fs::write(saves.join("modified.txt"), b"after").unwrap();
+    fs::remove_file(saves.join("removed.txt")).unwrap();
+    fs::remove_dir(saves.join("removed-empty")).unwrap();
+    fs::write(saves.join("added.txt"), b"added").unwrap();
+    fs::create_dir(saves.join("added-empty")).unwrap();
+
+    let changes = compare_entries(&snapshot.manifest.entries, &scan(&saves).unwrap());
+    assert_eq!(changes.len(), 5);
+    assert!(
+        changes
+            .iter()
+            .any(|change| change.change == ChangeKind::Modified && change.path == "modified.txt")
+    );
+    assert!(
+        changes
+            .iter()
+            .any(|change| change.change == ChangeKind::Removed && change.path == "removed.txt")
+    );
+    assert!(
+        changes
+            .iter()
+            .any(|change| change.change == ChangeKind::Removed && change.path == "removed-empty")
+    );
+    assert!(
+        changes
+            .iter()
+            .any(|change| change.change == ChangeKind::Added && change.path == "added.txt")
+    );
+    assert!(
+        changes
+            .iter()
+            .any(|change| change.change == ChangeKind::Added && change.path == "added-empty")
+    );
+}
+
+#[test]
+fn status_uses_the_newest_snapshot() {
+    let (_temp, vault, saves) = setup("snapshot-status");
+    fs::write(saves.join("save.bin"), b"before").unwrap();
+    create(&vault, &saves, Some("before".into()), false).unwrap();
+    fs::write(saves.join("save.bin"), b"after").unwrap();
+    create(&vault, &saves, Some("after".into()), false).unwrap();
+
+    let snapshots = history(&vault).unwrap();
+    let report = build_report(&vault.canonicalize().unwrap(), snapshots.first(), &saves).unwrap();
+    assert_eq!(report.snapshot.as_deref(), Some(snapshots[0].id.as_str()));
+    assert!(report.changes.is_empty());
+}
+
+#[test]
 fn restore_recreates_directory_and_file_snapshots_without_overwriting() {
     let (temp, vault, saves) = setup("snapshot-restore");
     fs::create_dir_all(saves.join("nested/empty")).unwrap();

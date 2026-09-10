@@ -95,6 +95,25 @@ Listing checks manifest structure and hashes. `verify-snapshot` additionally
 reads every referenced object and verifies its SHA-256 and size. Both commands
 are read-only.
 
+## Compare a live source
+
+`vault diff` scans and hashes a current save file or directory, then reports
+added, modified, and removed files or directories relative to a selected
+snapshot. `vault status` performs the same comparison against the newest
+snapshot. Neither command changes the vault or source and neither reads every
+stored object.
+
+```bash
+arkive vault diff /mnt/saves/arkive SNAPSHOT_ID ./my-game-saves
+arkive vault diff /mnt/saves/arkive SNAPSHOT_ID ./my-game-saves --json
+arkive vault status /mnt/saves/arkive ./my-game-saves
+```
+
+An unchanged source reports that it matches the snapshot. If the vault has no
+snapshots, `status` reports that no comparison is available. Sources and vaults
+must not overlap, and the same symlink, special-file, and path-name restrictions
+used by snapshot capture apply.
+
 ## Restore snapshots
 
 Restore always targets a new, explicit destination directory. Existing
@@ -116,7 +135,7 @@ inside the destination directory using its original file name.
 ## Planned vault work
 
 The implemented foundation is intentionally smaller than a full game-save
-cloud. Planned follow-up work includes game profiles, read-only status/diff
-views, encrypted manifests and objects, account namespaces, synchronization,
-and conflict preservation. Native SMB/NFS support and peer-to-peer transport
-are not prerequisites: OS-mounted paths remain the first remote-storage target.
+cloud. Planned follow-up work includes game profiles, encrypted manifests and
+objects, account namespaces, synchronization, and conflict preservation. Native
+SMB/NFS support and peer-to-peer transport are not prerequisites: OS-mounted
+paths remain the first remote-storage target.
