@@ -25,7 +25,7 @@ Version 1 stores this layout:
   vault.json
   objects/       # <file-sha256>/data
   snapshots/     # <manifest-sha256>/manifest.json
-  profiles/      # reserved for future game profiles
+  profiles/      # <profile-name>.json game-save path mappings
 ```
 
 Initialization is idempotent: repeating it validates the existing vault
@@ -80,6 +80,28 @@ unsupported path names. Arkive does not capture permissions, ownership,
 timestamps, ACLs, or extended attributes. Snapshots currently contain
 unencrypted contents and labels.
 
+## Configure game profiles
+
+A profile gives a save path a stable name for repeated operations. Arkive
+stores the canonical path on the current host; it does not copy or delete the
+save data when a profile changes. This is suitable for stable local paths and
+OS-mounted SMB/NFS paths. Cross-machine path variables are planned separately.
+
+```bash
+arkive vault profile add /mnt/saves/arkive my-game ./my-game-saves
+arkive vault profile list /mnt/saves/arkive
+arkive vault snapshot /mnt/saves/arkive --profile my-game --label "Before boss fight"
+arkive vault status /mnt/saves/arkive --profile my-game
+arkive vault diff /mnt/saves/arkive SNAPSHOT_ID --profile my-game
+arkive --dry-run vault profile remove /mnt/saves/arkive my-game
+arkive vault profile remove /mnt/saves/arkive my-game
+```
+
+Profile creation validates that the source exists, is a regular file or
+directory, is not a symlink, and does not overlap the vault. Profile files are
+published atomically. Removing a profile only removes its mapping; snapshots
+and live save data are preserved.
+
 ## Verify and list snapshots
 
 `SNAPSHOT_ID` is the full 64-character identifier printed after creation or
@@ -98,10 +120,10 @@ are read-only.
 ## Compare a live source
 
 `vault diff` scans and hashes a current save file or directory, then reports
-added, modified, and removed files or directories relative to a selected
-snapshot. `vault status` performs the same comparison against the newest
-snapshot. Neither command changes the vault or source and neither reads every
-stored object.
+added, modified, removed, and file/directory type changes relative to a
+selected snapshot. `vault status` performs the same comparison against the
+newest snapshot. Neither command changes the vault or source and neither reads
+every stored object.
 
 ```bash
 arkive vault diff /mnt/saves/arkive SNAPSHOT_ID ./my-game-saves
@@ -135,7 +157,7 @@ inside the destination directory using its original file name.
 ## Planned vault work
 
 The implemented foundation is intentionally smaller than a full game-save
-cloud. Planned follow-up work includes game profiles, encrypted manifests and
-objects, account namespaces, synchronization, and conflict preservation. Native
-SMB/NFS support and peer-to-peer transport are not prerequisites: OS-mounted
-paths remain the first remote-storage target.
+cloud. Planned follow-up work includes encrypted manifests and objects,
+account namespaces, synchronization, and conflict preservation. Native SMB/NFS
+support and peer-to-peer transport are not prerequisites: OS-mounted paths
+remain the first remote-storage target.

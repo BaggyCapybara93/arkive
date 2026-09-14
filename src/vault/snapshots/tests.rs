@@ -147,6 +147,27 @@ fn diff_reports_added_modified_and_removed_entries() {
 }
 
 #[test]
+fn diff_reports_file_directory_replacements_as_type_changes() {
+    let (_temp, vault, saves) = setup("snapshot-diff-types");
+    fs::write(saves.join("replacement"), b"file").unwrap();
+    create(&vault, &saves, None, false).unwrap();
+    let snapshot = history(&vault).unwrap().remove(0);
+
+    fs::remove_file(saves.join("replacement")).unwrap();
+    fs::create_dir(saves.join("replacement")).unwrap();
+    let changes = compare_entries(&snapshot.manifest.entries, &scan(&saves).unwrap());
+    let change = changes
+        .iter()
+        .find(|change| change.path == "replacement")
+        .unwrap();
+    assert_eq!(change.change, ChangeKind::TypeChanged);
+    assert_eq!(
+        serde_json::to_value(change).unwrap()["change"],
+        "type-changed"
+    );
+}
+
+#[test]
 fn status_uses_the_newest_snapshot() {
     let (_temp, vault, saves) = setup("snapshot-status");
     fs::write(saves.join("save.bin"), b"before").unwrap();

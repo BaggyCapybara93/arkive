@@ -481,16 +481,37 @@ fn ensure_unchanged(source: &Path, expected: &[Entry]) -> Result<(), AppError> {
     Ok(())
 }
 
+#[cfg(test)]
 pub fn create(
     path: &Path,
     source: &Path,
     label: Option<String>,
     dry_run: bool,
 ) -> Result<(), AppError> {
+    create_selected(path, Some(source), None, label, dry_run)
+}
+
+pub fn create_selected(
+    path: &Path,
+    source: Option<&Path>,
+    profile: Option<&str>,
+    label: Option<String>,
+    dry_run: bool,
+) -> Result<(), AppError> {
     let root = initialized(path)?;
+    let source = match (source, profile) {
+        (Some(_), Some(_)) => {
+            return Err(invalid(
+                "Provide either a source path or --profile, not both",
+            ));
+        }
+        (Some(source), None) => source.to_path_buf(),
+        (None, Some(profile)) => super::profiles::source(&root, profile)?,
+        (None, None) => return Err(invalid("Provide a source path or --profile")),
+    };
     if dry_run {
         super::ensure_unlocked(&root)?;
-        let snapshot = capture(&root, source, label, None)?;
+        let snapshot = capture(&root, &source, label, None)?;
         let (files, bytes) = totals(&snapshot.manifest)?;
         println!(
             "[DRY-RUN] Would snapshot {source:?}: {files} files, {bytes} bytes; no objects or manifest written"
@@ -502,7 +523,7 @@ pub fn create(
     let result = (|| {
         initialized(&root)?;
         super::with_scratch(&root, |scratch| {
-            snapshot = Some(capture(&root, source, label, Some(scratch))?);
+            snapshot = Some(capture(&root, &source, label, Some(scratch))?);
             Ok(())
         })
     })();
@@ -576,11 +597,12 @@ fn verify_loaded(root: &Path, snapshot: &Snapshot) -> Result<usize, AppError> {
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "kebab-case")]
 enum ChangeKind {
     Added,
     Modified,
     Removed,
+    TypeChanged,
 }
 
 #[derive(Debug, Serialize)]
@@ -616,6 +638,9 @@ fn compare_entries(previous: &[Entry], current: &[Entry]) -> Vec<Change> {
             let new = current.get(&path);
             let change = match (old, new) {
                 (Some(old), Some(new)) if old == new => return None,
+                (Some(old), Some(new)) if entry_kind(old) != entry_kind(new) => {
+                    ChangeKind::TypeChanged
+                }
                 (Some(_), Some(_)) => ChangeKind::Modified,
                 (None, Some(_)) => ChangeKind::Added,
                 (Some(_), None) => ChangeKind::Removed,
@@ -650,12 +675,32 @@ fn comparison_source(root: &Path, source: &Path) -> Result<PathBuf, AppError> {
     Ok(source)
 }
 
+#[cfg(test)]
 fn build_report(
     root: &Path,
     snapshot: Option<&Snapshot>,
     source: &Path,
 ) -> Result<DiffReport, AppError> {
-    let source = comparison_source(root, source)?;
+    build_report_selected(root, snapshot, Some(source), None)
+}
+
+fn build_report_selected(
+    root: &Path,
+    snapshot: Option<&Snapshot>,
+    source: Option<&Path>,
+    profile: Option<&str>,
+) -> Result<DiffReport, AppError> {
+    let source = match (source, profile) {
+        (Some(_), Some(_)) => {
+            return Err(invalid(
+                "Provide either a source path or --profile, not both",
+            ));
+        }
+        (Some(source), None) => source.to_path_buf(),
+        (None, Some(profile)) => super::profiles::source(root, profile)?,
+        (None, None) => return Err(invalid("Provide a source path or --profile")),
+    };
+    let source = comparison_source(root, &source)?;
     let current = scan(&source)?;
     let (snapshot, changes) = match snapshot {
         Some(snapshot) => (
@@ -714,17 +759,28 @@ fn print_report(report: &DiffReport, json: bool) -> Result<(), AppError> {
     Ok(())
 }
 
-pub fn diff(path: &Path, id: &str, source: &Path, json: bool) -> Result<(), AppError> {
+pub fn diff_selected(
+    path: &Path,
+    id: &str,
+    source: Option<&Path>,
+    profile: Option<&str>,
+    json: bool,
+) -> Result<(), AppError> {
     let root = initialized(path)?;
     let snapshot = load(&root, id)?;
-    let report = build_report(&root, Some(&snapshot), source)?;
+    let report = build_report_selected(&root, Some(&snapshot), source, profile)?;
     print_report(&report, json)
 }
 
-pub fn status(path: &Path, source: &Path, json: bool) -> Result<(), AppError> {
+pub fn status_selected(
+    path: &Path,
+    source: Option<&Path>,
+    profile: Option<&str>,
+    json: bool,
+) -> Result<(), AppError> {
     let root = initialized(path)?;
     let snapshots = history(&root)?;
-    let report = build_report(&root, snapshots.first(), source)?;
+    let report = build_report_selected(&root, snapshots.first(), source, profile)?;
     print_report(&report, json)
 }
 

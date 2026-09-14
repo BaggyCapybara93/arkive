@@ -1,4 +1,5 @@
 //! Filesystem vault foundation. Network mounts and credentials belong to the OS.
+pub mod profiles;
 pub mod snapshots;
 
 use std::fs::{self, File, OpenOptions};

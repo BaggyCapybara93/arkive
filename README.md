@@ -16,9 +16,10 @@ and local-first game-save storage.
 - Initialize filesystem-backed vaults and check local or OS-mounted SMB/NFS paths
 - Capture immutable, deduplicated save snapshots and restore them safely
 - Compare current saves with a selected or newest snapshot
+- Save named game profiles for repeatable snapshot and status commands
 
-Vaults currently store snapshots and verified content-addressed objects. Game
-profiles, synchronization, conflict handling, and encryption are planned but
+Vaults currently store profiles, snapshots, and verified content-addressed
+objects. Synchronization, conflict handling, and encryption are planned but
 not implemented yet.
 
 ## Install
@@ -52,6 +53,9 @@ arkive vault snapshot /mnt/saves/arkive ./saves --label "Before boss fight"
 arkive vault snapshots /mnt/saves/arkive
 arkive vault verify-snapshot /mnt/saves/arkive SNAPSHOT_ID
 arkive vault status /mnt/saves/arkive ./saves
+arkive vault profile add /mnt/saves/arkive my-game ./saves
+arkive vault snapshot /mnt/saves/arkive --profile my-game --label "Before boss fight"
+arkive vault status /mnt/saves/arkive --profile my-game
 ```
 
 For a mounted SMB or NFS share, mount it with the operating system first and

@@ -258,10 +258,15 @@ pub enum VaultCommand {
     /// Snapshot a save file or directory into an initialized vault
     Snapshot {
         path: PathBuf,
-        source: PathBuf,
+        /// Current save file or directory to snapshot
+        #[arg(required_unless_present = "profile", conflicts_with = "profile")]
+        source: Option<PathBuf>,
         /// Optional description (up to 256 UTF-8 bytes)
         #[arg(long)]
         label: Option<String>,
+        /// Name of a configured game profile to snapshot
+        #[arg(long, required_unless_present = "source", conflicts_with = "source")]
+        profile: Option<String>,
     },
     /// List snapshot history (manifest integrity is checked; objects are not read)
     Snapshots {
@@ -278,19 +283,27 @@ pub enum VaultCommand {
         /// Full 64-character snapshot ID
         snapshot: String,
         /// Current save file or directory to compare
-        source: PathBuf,
+        #[arg(required_unless_present = "profile", conflicts_with = "profile")]
+        source: Option<PathBuf>,
         /// Print the comparison as JSON
         #[arg(long)]
         json: bool,
+        /// Name of a configured game profile to compare
+        #[arg(long, required_unless_present = "source", conflicts_with = "source")]
+        profile: Option<String>,
     },
     /// Compare a save source with the newest snapshot
     Status {
         path: PathBuf,
         /// Current save file or directory to compare
-        source: PathBuf,
+        #[arg(required_unless_present = "profile", conflicts_with = "profile")]
+        source: Option<PathBuf>,
         /// Print the comparison as JSON
         #[arg(long)]
         json: bool,
+        /// Name of a configured game profile to compare
+        #[arg(long, required_unless_present = "source", conflicts_with = "source")]
+        profile: Option<String>,
     },
     /// Restore a snapshot into a new, explicit destination directory
     Restore {
@@ -300,6 +313,32 @@ pub enum VaultCommand {
         /// New directory that will receive the restored save; it must not already exist
         destination: PathBuf,
     },
+    /// Manage named game-save profiles
+    Profile {
+        #[command(subcommand)]
+        command: ProfileCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ProfileCommand {
+    /// Add a named profile for a save file or directory
+    Add {
+        path: PathBuf,
+        /// Profile name used by --profile
+        name: String,
+        /// Current save file or directory
+        source: PathBuf,
+    },
+    /// List configured game-save profiles
+    List {
+        path: PathBuf,
+        /// Print profiles as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove a profile without deleting snapshots or save data
+    Remove { path: PathBuf, name: String },
 }
 
 fn handle_move(
@@ -521,7 +560,14 @@ pub fn cli_handler(cmd: Command, settings: &Settings) -> Result<(), AppError> {
                 path,
                 source,
                 label,
-            } => crate::vault::snapshots::create(&path, &source, label, settings.dry_run),
+                profile,
+            } => crate::vault::snapshots::create_selected(
+                &path,
+                source.as_deref(),
+                profile.as_deref(),
+                label,
+                settings.dry_run,
+            ),
             VaultCommand::Snapshots { path, json } => crate::vault::snapshots::list(&path, json),
             VaultCommand::VerifySnapshot { path, snapshot } => {
                 crate::vault::snapshots::verify(&path, &snapshot)
@@ -531,15 +577,39 @@ pub fn cli_handler(cmd: Command, settings: &Settings) -> Result<(), AppError> {
                 snapshot,
                 source,
                 json,
-            } => crate::vault::snapshots::diff(&path, &snapshot, &source, json),
-            VaultCommand::Status { path, source, json } => {
-                crate::vault::snapshots::status(&path, &source, json)
-            }
+                profile,
+            } => crate::vault::snapshots::diff_selected(
+                &path,
+                &snapshot,
+                source.as_deref(),
+                profile.as_deref(),
+                json,
+            ),
+            VaultCommand::Status {
+                path,
+                source,
+                json,
+                profile,
+            } => crate::vault::snapshots::status_selected(
+                &path,
+                source.as_deref(),
+                profile.as_deref(),
+                json,
+            ),
             VaultCommand::Restore {
                 path,
                 snapshot,
                 destination,
             } => crate::vault::snapshots::restore(&path, &snapshot, &destination, settings.dry_run),
+            VaultCommand::Profile { command } => match command {
+                ProfileCommand::Add { path, name, source } => {
+                    crate::vault::profiles::add(&path, &name, &source, settings.dry_run)
+                }
+                ProfileCommand::List { path, json } => crate::vault::profiles::list(&path, json),
+                ProfileCommand::Remove { path, name } => {
+                    crate::vault::profiles::remove(&path, &name, settings.dry_run)
+                }
+            },
         },
         Command::Move {
             src,
