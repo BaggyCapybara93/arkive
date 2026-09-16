@@ -269,6 +269,19 @@ pub enum VaultCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Remove old snapshots while retaining a selected history
+    Prune {
+        path: PathBuf,
+        /// Retain at least this many newest snapshots
+        #[arg(long)]
+        keep_last: usize,
+        /// Retain a snapshot by its full ID; may be repeated
+        #[arg(long = "protect")]
+        protected: Vec<String>,
+        /// Print the pruning report as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Snapshot a save file or directory into an initialized vault
     Snapshot {
         path: PathBuf,
@@ -573,6 +586,14 @@ pub fn cli_handler(cmd: Command, settings: &Settings) -> Result<(), AppError> {
             VaultCommand::Health { path, json } => crate::vault::snapshots::health(&path, json),
             VaultCommand::Gc { path, json } => {
                 crate::vault::snapshots::gc(&path, settings.dry_run, json)
+            }
+            VaultCommand::Prune {
+                path,
+                keep_last,
+                protected,
+                json,
+            } => {
+                crate::vault::snapshots::prune(&path, keep_last, &protected, settings.dry_run, json)
             }
             VaultCommand::Snapshot {
                 path,

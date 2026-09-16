@@ -18,6 +18,7 @@ and local-first game-save storage.
 - Compare current saves with a selected or newest snapshot
 - Save named game profiles for repeatable snapshot and status commands
 - Audit vault health and safely reclaim unreferenced snapshot objects
+- Prune old snapshots while retaining protected history
 
 Vaults currently store profiles, snapshots, and verified content-addressed
 objects. Synchronization, conflict handling, and encryption are planned but
@@ -50,6 +51,7 @@ arkive vault init /mnt/saves/arkive
 arkive vault check /mnt/saves/arkive
 arkive vault health /mnt/saves/arkive
 arkive --dry-run vault gc /mnt/saves/arkive
+arkive --dry-run vault prune /mnt/saves/arkive --keep-last 20
 
 # Capture and verify a save snapshot.
 arkive vault snapshot /mnt/saves/arkive ./saves --label "Before boss fight"

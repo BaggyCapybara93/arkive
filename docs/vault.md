@@ -148,7 +148,26 @@ arkive vault gc /mnt/saves/arkive --json
 Garbage collection holds the vault lock and refuses to delete anything when a
 snapshot manifest is invalid, a referenced object is missing or corrupt, or
 the vault's reachability cannot be established completely. Snapshot retention
-and pruning policies are separate planned features.
+and pruning are documented separately below.
+
+## Prune snapshot history
+
+`vault prune` removes older snapshot manifests while retaining a specified
+number of newest snapshots. Protected snapshot IDs are retained in addition to
+that newest history. Pruning does not remove objects; run `vault gc` separately
+after reviewing the result.
+
+```bash
+arkive --dry-run vault prune /mnt/saves/arkive --keep-last 20
+arkive vault prune /mnt/saves/arkive --keep-last 20
+arkive vault prune /mnt/saves/arkive --keep-last 20 --protect SNAPSHOT_ID
+arkive vault prune /mnt/saves/arkive --keep-last 20 --json
+```
+
+The command validates the complete vault before planning deletions, holds the
+vault lock while pruning, and deletes snapshots oldest-first. A protected ID
+must refer to an existing snapshot. Use the dry-run to inspect the exact
+removal list before writing changes.
 
 ## Compare a live source
 
@@ -190,7 +209,7 @@ inside the destination directory using its original file name.
 ## Planned vault work
 
 The implemented foundation is intentionally smaller than a full game-save
-cloud. Planned follow-up work includes snapshot retention policies, encrypted
-manifests and objects, account namespaces, synchronization, and conflict
-preservation. Native SMB/NFS support and peer-to-peer transport are not
-prerequisites: OS-mounted paths remain the first remote-storage target.
+cloud. Planned follow-up work includes encrypted manifests and objects,
+account namespaces, synchronization, and conflict preservation. Native SMB/NFS
+support and peer-to-peer transport are not prerequisites: OS-mounted paths
+remain the first remote-storage target.

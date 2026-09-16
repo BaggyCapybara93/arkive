@@ -171,6 +171,76 @@ fn garbage_collection_refuses_to_delete_when_reachability_is_incomplete() {
 }
 
 #[test]
+fn prune_keeps_newest_snapshots_and_explicitly_protected_history() {
+    let (_temp, vault, saves) = setup("snapshot-prune");
+    for value in ["one", "two", "three", "four"] {
+        fs::write(saves.join("save.dat"), value).unwrap();
+        create(&vault, &saves, Some(value.into()), false).unwrap();
+    }
+    let snapshots = history(&vault).unwrap();
+    let protected = snapshots[3].id.clone();
+    let expected_removed = snapshots[2].id.clone();
+    let newest = [snapshots[0].id.clone(), snapshots[1].id.clone()];
+
+    let plan = prune_plan(
+        &vault,
+        &snapshots,
+        2,
+        std::slice::from_ref(&protected),
+        true,
+    )
+    .unwrap();
+    assert_eq!(plan.report.removed.len(), 1);
+    assert_eq!(plan.report.removed[0].id, expected_removed);
+    assert_eq!(plan.report.retained, 3);
+
+    prune(&vault, 2, std::slice::from_ref(&protected), false, false).unwrap();
+    assert_eq!(count(&vault, "snapshots"), 3);
+    assert!(
+        vault
+            .join(CONTROL)
+            .join("snapshots")
+            .join(protected)
+            .exists()
+    );
+    for id in newest {
+        assert!(vault.join(CONTROL).join("snapshots").join(id).exists());
+    }
+    assert!(
+        !vault
+            .join(CONTROL)
+            .join("snapshots")
+            .join(expected_removed)
+            .exists()
+    );
+}
+
+#[test]
+fn prune_dry_run_does_not_delete_snapshots() {
+    let (_temp, vault, saves) = setup("snapshot-prune-dry-run");
+    for value in ["one", "two", "three"] {
+        fs::write(saves.join("save.dat"), value).unwrap();
+        create(&vault, &saves, None, false).unwrap();
+    }
+    let before = history(&vault).unwrap();
+
+    prune(&vault, 1, &[], true, false).unwrap();
+
+    assert_eq!(history(&vault).unwrap().len(), before.len());
+}
+
+#[test]
+fn prune_rejects_invalid_or_unknown_protection_requests() {
+    let (_temp, vault, saves) = setup("snapshot-prune-validation");
+    fs::write(saves.join("save.dat"), b"save").unwrap();
+    create(&vault, &saves, None, false).unwrap();
+
+    assert!(prune(&vault, 0, &[], true, false).is_err());
+    assert!(prune(&vault, 1, &["invalid".into()], true, false).is_err());
+    assert!(prune(&vault, 1, &["a".repeat(64)], true, false).is_err());
+}
+
+#[test]
 fn diff_reports_added_modified_and_removed_entries() {
     let (_temp, vault, saves) = setup("snapshot-diff");
     fs::write(saves.join("modified.txt"), b"before").unwrap();

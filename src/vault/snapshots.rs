@@ -881,6 +881,165 @@ pub fn gc(path: &Path, dry_run: bool, json: bool) -> Result<(), AppError> {
     )
 }
 
+#[derive(Debug, Serialize)]
+struct PrunedSnapshot {
+    id: String,
+    created_at: DateTime<Utc>,
+    label: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PruneReport {
+    vault: String,
+    dry_run: bool,
+    keep_last: usize,
+    protected: Vec<String>,
+    retained: usize,
+    removed: Vec<PrunedSnapshot>,
+}
+
+#[derive(Debug)]
+struct PrunePlan {
+    report: PruneReport,
+}
+
+fn prune_plan(
+    root: &Path,
+    snapshots: &[Snapshot],
+    keep_last: usize,
+    protected: &[String],
+    dry_run: bool,
+) -> Result<PrunePlan, AppError> {
+    if keep_last == 0 {
+        return Err(invalid("--keep-last must be at least 1"));
+    }
+
+    let snapshot_ids: BTreeSet<_> = snapshots
+        .iter()
+        .map(|snapshot| snapshot.id.as_str())
+        .collect();
+    let mut protected_ids = BTreeSet::new();
+    for id in protected {
+        if !valid_id(id) {
+            return Err(invalid(format!(
+                "Protected snapshot ID must be 64 lowercase hexadecimal characters: {id:?}"
+            )));
+        }
+        if !snapshot_ids.contains(id.as_str()) {
+            return Err(invalid(format!("Protected snapshot was not found: {id}")));
+        }
+        protected_ids.insert(id.clone());
+    }
+
+    let retained_ids: BTreeSet<_> = snapshots
+        .iter()
+        .take(keep_last)
+        .map(|snapshot| snapshot.id.as_str())
+        .chain(protected_ids.iter().map(String::as_str))
+        .collect();
+    let removed: Vec<_> = snapshots
+        .iter()
+        .rev()
+        .filter(|snapshot| !retained_ids.contains(snapshot.id.as_str()))
+        .map(|snapshot| PrunedSnapshot {
+            id: snapshot.id.clone(),
+            created_at: snapshot.manifest.created_at,
+            label: snapshot.manifest.label.clone(),
+        })
+        .collect();
+
+    Ok(PrunePlan {
+        report: PruneReport {
+            vault: root.display().to_string(),
+            dry_run,
+            keep_last,
+            protected: protected_ids.into_iter().collect(),
+            retained: snapshots.len() - removed.len(),
+            removed,
+        },
+    })
+}
+
+fn print_prune(report: &PruneReport, json: bool) -> Result<(), AppError> {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(report)
+                .map_err(|error| invalid(format!("Could not encode prune report: {error}")))?
+        );
+        return Ok(());
+    }
+
+    if report.dry_run {
+        println!(
+            "[DRY-RUN] Would remove {} snapshot(s) from {:?}; {} would remain",
+            report.removed.len(),
+            report.vault,
+            report.retained
+        );
+    } else {
+        println!(
+            "Pruned {} snapshot(s) from {:?}; {} remain",
+            report.removed.len(),
+            report.vault,
+            report.retained
+        );
+    }
+    for snapshot in &report.removed {
+        println!(
+            "{}  {}  label={:?}",
+            snapshot.id,
+            snapshot.created_at.to_rfc3339(),
+            snapshot.label.as_deref().unwrap_or("")
+        );
+    }
+    Ok(())
+}
+
+pub fn prune(
+    path: &Path,
+    keep_last: usize,
+    protected: &[String],
+    dry_run: bool,
+    json: bool,
+) -> Result<(), AppError> {
+    let root = initialized(path)?;
+    if dry_run {
+        super::ensure_unlocked(&root)?;
+        let audit = audit(&root)?;
+        require_auditable(&audit)?;
+        let plan = prune_plan(&root, &history(&root)?, keep_last, protected, true)?;
+        return print_prune(&plan.report, json);
+    }
+
+    let lock = VaultLock::acquire(&root)?;
+    let mut report = None;
+    let result = (|| {
+        initialized(&root)?;
+        let audit = audit(&root)?;
+        require_auditable(&audit)?;
+        let snapshots = history(&root)?;
+        let plan = prune_plan(&root, &snapshots, keep_last, protected, false)?;
+
+        for snapshot in &plan.report.removed {
+            let directory = root.join(CONTROL).join("snapshots").join(&snapshot.id);
+            require_directory(&directory)?;
+        }
+        for snapshot in &plan.report.removed {
+            let directory = root.join(CONTROL).join("snapshots").join(&snapshot.id);
+            io_at(
+                fs::remove_dir_all(&directory),
+                "remove pruned snapshot",
+                &directory,
+            )?;
+        }
+        report = Some(plan.report);
+        Ok(())
+    })();
+    combine(result, lock.release())?;
+    print_prune(&report.expect("successful pruning creates a report"), json)
+}
+
 #[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 enum ChangeKind {
