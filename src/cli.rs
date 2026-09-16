@@ -255,6 +255,20 @@ pub enum VaultCommand {
     Init { path: PathBuf },
     /// Test read, write, rename, delete, and SHA-256 verification in an existing directory
     Check { path: PathBuf },
+    /// Audit snapshot manifests and content-addressed objects
+    Health {
+        path: PathBuf,
+        /// Print the health report as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove verified objects that no snapshot references
+    Gc {
+        path: PathBuf,
+        /// Print the garbage-collection report as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Snapshot a save file or directory into an initialized vault
     Snapshot {
         path: PathBuf,
@@ -556,6 +570,10 @@ pub fn cli_handler(cmd: Command, settings: &Settings) -> Result<(), AppError> {
         Command::Vault { command } => match command {
             VaultCommand::Init { path } => crate::vault::init(&path, settings.dry_run),
             VaultCommand::Check { path } => crate::vault::check(&path, settings.dry_run),
+            VaultCommand::Health { path, json } => crate::vault::snapshots::health(&path, json),
+            VaultCommand::Gc { path, json } => {
+                crate::vault::snapshots::gc(&path, settings.dry_run, json)
+            }
             VaultCommand::Snapshot {
                 path,
                 source,

@@ -17,6 +17,7 @@ and local-first game-save storage.
 - Capture immutable, deduplicated save snapshots and restore them safely
 - Compare current saves with a selected or newest snapshot
 - Save named game profiles for repeatable snapshot and status commands
+- Audit vault health and safely reclaim unreferenced snapshot objects
 
 Vaults currently store profiles, snapshots, and verified content-addressed
 objects. Synchronization, conflict handling, and encryption are planned but
@@ -47,6 +48,8 @@ arkive compress ./saves ./saves.tar.zst --method zstd
 # Initialize and check a dedicated vault directory.
 arkive vault init /mnt/saves/arkive
 arkive vault check /mnt/saves/arkive
+arkive vault health /mnt/saves/arkive
+arkive --dry-run vault gc /mnt/saves/arkive
 
 # Capture and verify a save snapshot.
 arkive vault snapshot /mnt/saves/arkive ./saves --label "Before boss fight"

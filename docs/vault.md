@@ -117,6 +117,39 @@ Listing checks manifest structure and hashes. `verify-snapshot` additionally
 reads every referenced object and verifies its SHA-256 and size. Both commands
 are read-only.
 
+## Audit vault health
+
+`vault health` audits every snapshot manifest and every content-addressed
+object. It reports invalid snapshot entries, corrupt or missing objects, size
+mismatches, stored-object totals, and verified objects that no snapshot
+references.
+
+```bash
+arkive vault health /mnt/saves/arkive
+arkive vault health /mnt/saves/arkive --json
+```
+
+An orphaned object is not automatically treated as corruption. It may be left
+over after an interrupted snapshot capture and can be reclaimed safely when
+the health audit finds no other issues.
+
+## Garbage collection
+
+`vault gc` removes only verified object directories that are not referenced by
+any valid snapshot. It never removes snapshots, profiles, or invalid object
+entries. Run the dry-run first:
+
+```bash
+arkive --dry-run vault gc /mnt/saves/arkive
+arkive vault gc /mnt/saves/arkive
+arkive vault gc /mnt/saves/arkive --json
+```
+
+Garbage collection holds the vault lock and refuses to delete anything when a
+snapshot manifest is invalid, a referenced object is missing or corrupt, or
+the vault's reachability cannot be established completely. Snapshot retention
+and pruning policies are separate planned features.
+
 ## Compare a live source
 
 `vault diff` scans and hashes a current save file or directory, then reports
@@ -157,7 +190,7 @@ inside the destination directory using its original file name.
 ## Planned vault work
 
 The implemented foundation is intentionally smaller than a full game-save
-cloud. Planned follow-up work includes encrypted manifests and objects,
-account namespaces, synchronization, and conflict preservation. Native SMB/NFS
-support and peer-to-peer transport are not prerequisites: OS-mounted paths
-remain the first remote-storage target.
+cloud. Planned follow-up work includes snapshot retention policies, encrypted
+manifests and objects, account namespaces, synchronization, and conflict
+preservation. Native SMB/NFS support and peer-to-peer transport are not
+prerequisites: OS-mounted paths remain the first remote-storage target.

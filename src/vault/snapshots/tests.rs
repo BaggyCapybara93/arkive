@@ -103,6 +103,74 @@ fn empty_directory_is_a_valid_snapshot() {
 }
 
 #[test]
+fn health_reports_orphaned_objects_without_treating_them_as_corrupt() {
+    let (_temp, vault, saves) = setup("snapshot-health");
+    let source = saves.join("save.dat");
+    fs::write(&source, b"referenced").unwrap();
+    create(&vault, &source, None, false).unwrap();
+
+    let orphan_hash = hex(&Sha256::digest(b"orphan"));
+    let orphan = object_path(&vault, &orphan_hash);
+    fs::create_dir(&orphan).unwrap();
+    fs::write(orphan.join("data"), b"orphan").unwrap();
+
+    let audit = audit(&vault).unwrap();
+    assert!(audit.report.issues.is_empty());
+    assert_eq!(audit.report.snapshots, 1);
+    assert_eq!(audit.report.referenced_objects, 1);
+    assert_eq!(audit.report.stored_objects, 2);
+    assert_eq!(audit.report.orphaned_objects, 1);
+    assert_eq!(audit.report.orphaned_bytes, 6);
+    assert_eq!(audit.reclaimable.len(), 1);
+}
+
+#[test]
+fn garbage_collection_dry_run_preserves_orphans_and_real_run_keeps_referenced_objects() {
+    let (_temp, vault, saves) = setup("snapshot-gc");
+    let source = saves.join("save.dat");
+    fs::write(&source, b"referenced").unwrap();
+    create(&vault, &source, None, false).unwrap();
+    let snapshot = history(&vault).unwrap().remove(0);
+    let referenced_hash = match &snapshot.manifest.entries[0] {
+        Entry::File { sha256, .. } => sha256.clone(),
+        Entry::Directory { .. } => panic!("expected file snapshot"),
+    };
+
+    let orphan_hash = hex(&Sha256::digest(b"orphan"));
+    let orphan = object_path(&vault, &orphan_hash);
+    fs::create_dir(&orphan).unwrap();
+    fs::write(orphan.join("data"), b"orphan").unwrap();
+
+    gc(&vault, true, false).unwrap();
+    assert!(orphan.exists());
+    gc(&vault, false, false).unwrap();
+    assert!(!orphan.exists());
+    assert!(object_path(&vault, &referenced_hash).exists());
+}
+
+#[test]
+fn garbage_collection_refuses_to_delete_when_reachability_is_incomplete() {
+    let (_temp, vault, saves) = setup("snapshot-gc-incomplete");
+    let source = saves.join("save.dat");
+    fs::write(&source, b"referenced").unwrap();
+    create(&vault, &source, None, false).unwrap();
+    let snapshot = history(&vault).unwrap().remove(0);
+    let referenced_hash = match &snapshot.manifest.entries[0] {
+        Entry::File { sha256, .. } => sha256.clone(),
+        Entry::Directory { .. } => panic!("expected file snapshot"),
+    };
+    fs::remove_dir_all(object_path(&vault, &referenced_hash)).unwrap();
+
+    let orphan_hash = hex(&Sha256::digest(b"orphan"));
+    let orphan = object_path(&vault, &orphan_hash);
+    fs::create_dir(&orphan).unwrap();
+    fs::write(orphan.join("data"), b"orphan").unwrap();
+
+    assert!(gc(&vault, false, false).is_err());
+    assert!(orphan.exists());
+}
+
+#[test]
 fn diff_reports_added_modified_and_removed_entries() {
     let (_temp, vault, saves) = setup("snapshot-diff");
     fs::write(saves.join("modified.txt"), b"before").unwrap();

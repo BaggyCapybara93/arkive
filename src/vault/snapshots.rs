@@ -596,6 +596,291 @@ fn verify_loaded(root: &Path, snapshot: &Snapshot) -> Result<usize, AppError> {
     Ok(verified.len())
 }
 
+#[derive(Debug, Serialize)]
+struct HealthReport {
+    vault: String,
+    snapshots: usize,
+    referenced_objects: usize,
+    stored_objects: usize,
+    stored_bytes: u64,
+    orphaned_objects: usize,
+    orphaned_bytes: u64,
+    issues: Vec<String>,
+}
+
+#[derive(Debug)]
+struct ReclaimableObject {
+    path: PathBuf,
+}
+
+#[derive(Debug)]
+struct Audit {
+    report: HealthReport,
+    reclaimable: Vec<ReclaimableObject>,
+}
+
+fn inspect_stored_object(root: &Path, hash: &str) -> Result<u64, AppError> {
+    let directory = object_path(root, hash);
+    require_directory(&directory)?;
+    let data = directory.join("data");
+    let (actual, size) = hash_file(&data, None)?;
+    if actual != hash {
+        return Err(invalid(format!(
+            "Object {hash} has SHA-256 {actual}, not its directory hash"
+        )));
+    }
+    Ok(size)
+}
+
+fn audit(root: &Path) -> Result<Audit, AppError> {
+    let mut issues = Vec::new();
+    let mut references = BTreeMap::new();
+    let snapshots_dir = root.join(CONTROL).join("snapshots");
+    let mut snapshot_count = 0;
+
+    for entry in fs::read_dir(&snapshots_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let metadata = io_at(fs::symlink_metadata(&path), "inspect snapshot entry", &path)?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            issues.push(format!(
+                "Snapshot entry is not a regular directory: {path:?}"
+            ));
+            continue;
+        }
+        let Some(id) = entry.file_name().to_str().map(str::to_owned) else {
+            issues.push(format!("Snapshot entry has a non-UTF-8 name: {path:?}"));
+            continue;
+        };
+        if !valid_id(&id) {
+            issues.push(format!("Snapshot directory has an invalid ID: {path:?}"));
+            continue;
+        }
+        let snapshot = match load(root, &id) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                issues.push(format!("Snapshot {id} is invalid: {error}"));
+                continue;
+            }
+        };
+        snapshot_count += 1;
+        for entry in snapshot.manifest.entries {
+            if let Entry::File { sha256, size, .. } = entry
+                && let Some(previous) = references.insert(sha256.clone(), size)
+                && previous != size
+            {
+                issues.push(format!(
+                    "Object {sha256} is referenced with conflicting sizes: {previous} and {size}"
+                ));
+            }
+        }
+    }
+
+    let objects_dir = root.join(CONTROL).join("objects");
+    let mut stored = BTreeMap::new();
+    let mut stored_bytes = 0u64;
+    for entry in fs::read_dir(&objects_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let metadata = io_at(fs::symlink_metadata(&path), "inspect object entry", &path)?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            issues.push(format!("Object entry is not a regular directory: {path:?}"));
+            continue;
+        }
+        let Some(hash) = entry.file_name().to_str().map(str::to_owned) else {
+            issues.push(format!("Object entry has a non-UTF-8 name: {path:?}"));
+            continue;
+        };
+        if !valid_id(&hash) {
+            issues.push(format!("Object directory has an invalid hash: {path:?}"));
+            continue;
+        }
+        match inspect_stored_object(root, &hash) {
+            Ok(bytes) => {
+                stored_bytes = stored_bytes
+                    .checked_add(bytes)
+                    .ok_or_else(|| invalid("Stored object byte total overflow"))?;
+                stored.insert(hash, Some(bytes));
+            }
+            Err(error) => {
+                issues.push(format!("Object {hash} is invalid: {error}"));
+                stored.insert(hash, None);
+            }
+        }
+    }
+
+    for (hash, expected_size) in &references {
+        match stored.get(hash) {
+            None => issues.push(format!("Referenced object is missing: {hash}")),
+            Some(Some(actual_size)) if actual_size != expected_size => issues.push(format!(
+                "Referenced object {hash} has size {actual_size}, expected {expected_size}"
+            )),
+            Some(Some(_)) | Some(None) => {}
+        }
+    }
+
+    let mut reclaimable = Vec::new();
+    let mut orphaned_bytes = 0u64;
+    for (hash, size) in &stored {
+        let Some(bytes) = size else {
+            continue;
+        };
+        if !references.contains_key(hash) {
+            orphaned_bytes = orphaned_bytes
+                .checked_add(*bytes)
+                .ok_or_else(|| invalid("Orphaned object byte total overflow"))?;
+            reclaimable.push(ReclaimableObject {
+                path: object_path(root, hash),
+            });
+        }
+    }
+
+    Ok(Audit {
+        report: HealthReport {
+            vault: root.display().to_string(),
+            snapshots: snapshot_count,
+            referenced_objects: references.len(),
+            stored_objects: stored.len(),
+            stored_bytes,
+            orphaned_objects: reclaimable.len(),
+            orphaned_bytes,
+            issues,
+        },
+        reclaimable,
+    })
+}
+
+fn print_health(report: &HealthReport, json: bool) -> Result<(), AppError> {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(report)
+                .map_err(|error| invalid(format!("Could not encode health report: {error}")))?
+        );
+        return Ok(());
+    }
+
+    if report.issues.is_empty() {
+        println!("Vault healthy: {:?}", report.vault);
+    } else {
+        println!("Vault health: {} issue(s)", report.issues.len());
+        for issue in &report.issues {
+            println!("- {issue}");
+        }
+    }
+    println!(
+        "{} snapshot(s), {} stored object(s), {} referenced object(s), {} orphaned object(s) ({} bytes)",
+        report.snapshots,
+        report.stored_objects,
+        report.referenced_objects,
+        report.orphaned_objects,
+        report.orphaned_bytes
+    );
+    Ok(())
+}
+
+pub fn health(path: &Path, json: bool) -> Result<(), AppError> {
+    let root = initialized(path)?;
+    super::ensure_unlocked(&root)?;
+    let audit = audit(&root)?;
+    print_health(&audit.report, json)
+}
+
+#[derive(Debug, Serialize)]
+struct GcReport {
+    vault: String,
+    dry_run: bool,
+    objects: usize,
+    bytes: u64,
+}
+
+fn print_gc(report: &GcReport, json: bool) -> Result<(), AppError> {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(report).map_err(|error| invalid(format!(
+                "Could not encode garbage-collection report: {error}"
+            )))?
+        );
+    } else if report.dry_run {
+        println!(
+            "[DRY-RUN] Would remove {} unreferenced object(s) ({} bytes) from {:?}; no files written",
+            report.objects, report.bytes, report.vault
+        );
+    } else {
+        println!(
+            "Garbage collection removed {} unreferenced object(s) ({} bytes) from {:?}",
+            report.objects, report.bytes, report.vault
+        );
+    }
+    Ok(())
+}
+
+fn require_auditable(audit: &Audit) -> Result<(), AppError> {
+    if audit.report.issues.is_empty() {
+        Ok(())
+    } else {
+        Err(invalid(format!(
+            "Refusing garbage collection: vault health found {} issue(s); run `arkive vault health` for details",
+            audit.report.issues.len()
+        )))
+    }
+}
+
+pub fn gc(path: &Path, dry_run: bool, json: bool) -> Result<(), AppError> {
+    let root = initialized(path)?;
+    if dry_run {
+        super::ensure_unlocked(&root)?;
+        let audit = audit(&root)?;
+        require_auditable(&audit)?;
+        let report = GcReport {
+            vault: root.display().to_string(),
+            dry_run: true,
+            objects: audit.reclaimable.len(),
+            bytes: audit.report.orphaned_bytes,
+        };
+        return print_gc(&report, json);
+    }
+
+    let lock = VaultLock::acquire(&root)?;
+    let mut report = None;
+    let result = (|| {
+        initialized(&root)?;
+        let audit = audit(&root)?;
+        require_auditable(&audit)?;
+        for object in &audit.reclaimable {
+            let metadata = io_at(
+                fs::symlink_metadata(&object.path),
+                "inspect reclaimable object",
+                &object.path,
+            )?;
+            if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                return Err(invalid(format!(
+                    "Reclaimable object changed before deletion: {:?}",
+                    object.path
+                )));
+            }
+            io_at(
+                fs::remove_dir_all(&object.path),
+                "remove unreferenced object",
+                &object.path,
+            )?;
+        }
+        report = Some(GcReport {
+            vault: root.display().to_string(),
+            dry_run: false,
+            objects: audit.reclaimable.len(),
+            bytes: audit.report.orphaned_bytes,
+        });
+        Ok(())
+    })();
+    combine(result, lock.release())?;
+    print_gc(
+        &report.expect("successful garbage collection creates a report"),
+        json,
+    )
+}
+
 #[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 enum ChangeKind {
