@@ -11,15 +11,19 @@ impl MetadataHandler {
     pub fn collect_file(path: impl AsRef<Path>) -> Result<Metadata, MetadataError> {
         let path = path.as_ref();
 
-        let canonical_path = fs::canonicalize(path)?;
-        let metadata = fs::metadata(&canonical_path)?;
+        let canonical_path = fs::canonicalize(path)
+            .map_err(|source| MetadataError::io("canonicalize metadata source", path, source))?;
+        let metadata = fs::metadata(&canonical_path)
+            .map_err(|source| MetadataError::io("read metadata source", &canonical_path, source))?;
         if metadata.is_dir() {
             return Err(MetadataError::InvalidInput(
                 "Directories are not supported for file metadata collection".into(),
             ));
         }
 
-        let modified_at = metadata.modified()?;
+        let modified_at = metadata.modified().map_err(|source| {
+            MetadataError::io("read metadata modification time", &canonical_path, source)
+        })?;
         let modified_at: DateTime<Utc> = modified_at.into();
 
         let file_size = metadata.len();
@@ -27,7 +31,8 @@ impl MetadataHandler {
             .to_str()
             .ok_or_else(|| MetadataError::InvalidInput("Path is not valid UTF-8".into()))?;
 
-        let sha256 = hash_file(file_str)?;
+        let sha256 = hash_file(file_str)
+            .map_err(|source| MetadataError::io("hash metadata source", &canonical_path, source))?;
 
         Ok(Metadata::new(
             canonical_path,
