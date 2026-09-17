@@ -70,7 +70,8 @@ arkive --dry-run vault snapshot /mnt/saves/arkive ./my-game-saves
 
 Snapshots are immutable and content-addressed. Identical files are stored once
 and reused by later snapshots. A failed capture can leave verified,
-unreferenced objects for later reuse; automatic pruning is not implemented.
+unreferenced objects for later reuse; inspect them with `vault health` and
+reclaim them with `vault gc` after reviewing a dry run.
 Keep the vault together because manifests depend on their objects.
 
 The source is scanned again before publication. Changes detected during the
@@ -168,6 +169,29 @@ The command validates the complete vault before planning deletions, holds the
 vault lock while pruning, and deletes snapshots oldest-first. A protected ID
 must refer to an existing snapshot. Use the dry-run to inspect the exact
 removal list before writing changes.
+
+## Storage quotas
+
+`vault quota set` limits the logical storage used by immutable snapshot
+manifests and deduplicated object payloads. It does not promise a particular
+amount of free space on the underlying disk or share: directory and filesystem
+block overhead are platform-specific. A snapshot estimates its new unique
+objects and manifest before writing anything, so reused objects do not consume
+the quota again.
+
+```bash
+arkive vault quota set /mnt/saves/arkive --max-size 100GiB --warn-at 80
+arkive vault quota show /mnt/saves/arkive
+arkive vault quota show /mnt/saves/arkive --json
+```
+
+`--max-size` accepts whole-byte values with optional `B`, `KiB`, `MiB`,
+`GiB`, or `TiB` units. The warning threshold must be 1 through 99 percent.
+When a new snapshot reaches that threshold, Arkive refuses to start until you
+repeat the snapshot command with `--yes`. A snapshot that would exceed the
+maximum is always refused, including with `--yes`. `--dry-run` reports a
+quota projection and any warning-threshold crossing without requiring
+acknowledgement, and writes nothing.
 
 ## Compare a live source
 

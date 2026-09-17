@@ -20,6 +20,10 @@ const VERSION: u32 = 1;
 const MAX_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 const MAX_ENTRIES: usize = 100_000;
 const MAX_DEPTH: usize = 128;
+const QUOTA_FILE: &str = "quota.json";
+const QUOTA_FORMAT: &str = "arkive-quota";
+const QUOTA_VERSION: u32 = 1;
+const MAX_QUOTA_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
@@ -60,6 +64,35 @@ struct Snapshot {
     manifest: Manifest,
 }
 
+/// The quota covers immutable snapshot manifests and deduplicated save objects.
+/// It is a portable logical-byte limit, not a filesystem block-allocation limit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Quota {
+    format: String,
+    version: u32,
+    max_bytes: u64,
+    warn_at_percent: u8,
+}
+
+#[derive(Debug, Serialize)]
+struct QuotaReport {
+    vault: String,
+    configured: bool,
+    stored_bytes: u64,
+    max_bytes: Option<u64>,
+    available_bytes: Option<u64>,
+    warn_at_percent: Option<u8>,
+}
+
+#[derive(Debug)]
+struct QuotaAssessment {
+    current_bytes: u64,
+    additional_bytes: u64,
+    projected_bytes: u64,
+    quota: Quota,
+}
+
 fn initialized(path: &Path) -> Result<PathBuf, AppError> {
     let root = super::root(path)?;
     if !super::validate(&root)? {
@@ -68,6 +101,304 @@ fn initialized(path: &Path) -> Result<PathBuf, AppError> {
         )));
     }
     Ok(root)
+}
+
+fn quota_path(root: &Path) -> PathBuf {
+    root.join(CONTROL).join(QUOTA_FILE)
+}
+
+fn validate_quota(quota: &Quota) -> Result<(), AppError> {
+    if quota.format != QUOTA_FORMAT || quota.version != QUOTA_VERSION {
+        return Err(invalid("Unsupported quota format/version"));
+    }
+    if quota.max_bytes == 0 {
+        return Err(invalid("Quota maximum must be greater than zero"));
+    }
+    if !(1..100).contains(&quota.warn_at_percent) {
+        return Err(invalid("Quota warning percentage must be between 1 and 99"));
+    }
+    Ok(())
+}
+
+fn load_quota(root: &Path) -> Result<Option<Quota>, AppError> {
+    let path = quota_path(root);
+    if !exists(&path)? {
+        return Ok(None);
+    }
+    regular_file(&path)?;
+    let mut bytes = Vec::new();
+    io_at(
+        File::open(&path)?
+            .take(MAX_QUOTA_BYTES as u64 + 1)
+            .read_to_end(&mut bytes),
+        "read quota configuration",
+        &path,
+    )?;
+    if bytes.len() > MAX_QUOTA_BYTES {
+        return Err(invalid("Quota configuration exceeds 64 KiB"));
+    }
+    let quota: Quota = serde_json::from_slice(&bytes)
+        .map_err(|error| invalid(format!("Invalid quota configuration {path:?}: {error}")))?;
+    validate_quota(&quota)?;
+    Ok(Some(quota))
+}
+
+fn stored_vault_bytes(root: &Path) -> Result<u64, AppError> {
+    storage_bytes_in(&root.join(CONTROL).join("objects"))?
+        .checked_add(storage_bytes_in(&root.join(CONTROL).join("snapshots"))?)
+        .ok_or_else(|| invalid("Stored vault byte total overflow"))
+}
+
+fn storage_bytes_in(directory: &Path) -> Result<u64, AppError> {
+    require_directory(directory)?;
+    let mut total = 0u64;
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        let metadata = io_at(
+            fs::symlink_metadata(&path),
+            "inspect vault storage entry",
+            &path,
+        )?;
+        if metadata.file_type().is_symlink() {
+            return Err(invalid(format!(
+                "Vault storage cannot contain symlinks: {path:?}"
+            )));
+        }
+        let bytes = if metadata.is_dir() {
+            storage_bytes_in(&path)?
+        } else if metadata.is_file() {
+            metadata.len()
+        } else {
+            return Err(invalid(format!(
+                "Vault storage cannot contain special files: {path:?}"
+            )));
+        };
+        total = total
+            .checked_add(bytes)
+            .ok_or_else(|| invalid("Stored vault byte total overflow"))?;
+    }
+    Ok(total)
+}
+
+fn quota_assessment(
+    root: &Path,
+    manifest: &Manifest,
+    manifest_bytes: &[u8],
+) -> Result<Option<QuotaAssessment>, AppError> {
+    let Some(quota) = load_quota(root)? else {
+        return Ok(None);
+    };
+    let current_bytes = stored_vault_bytes(root)?;
+    let mut additional_bytes = 0u64;
+    let mut seen = BTreeSet::new();
+    for entry in &manifest.entries {
+        let Entry::File { sha256, size, .. } = entry else {
+            continue;
+        };
+        if seen.insert(sha256) && !exists(&object_path(root, sha256))? {
+            additional_bytes = additional_bytes
+                .checked_add(*size)
+                .ok_or_else(|| invalid("Additional snapshot byte total overflow"))?;
+        }
+    }
+    let id = hex(&Sha256::digest(manifest_bytes));
+    if !exists(&root.join(CONTROL).join("snapshots").join(id))? {
+        additional_bytes = additional_bytes
+            .checked_add(manifest_bytes.len() as u64)
+            .ok_or_else(|| invalid("Additional snapshot byte total overflow"))?;
+    }
+    let projected_bytes = current_bytes
+        .checked_add(additional_bytes)
+        .ok_or_else(|| invalid("Projected vault byte total overflow"))?;
+    Ok(Some(QuotaAssessment {
+        current_bytes,
+        additional_bytes,
+        projected_bytes,
+        quota,
+    }))
+}
+
+fn quota_warning(assessment: &QuotaAssessment) -> bool {
+    u128::from(assessment.projected_bytes) * 100
+        >= u128::from(assessment.quota.max_bytes) * u128::from(assessment.quota.warn_at_percent)
+}
+
+fn enforce_quota(
+    assessment: Option<&QuotaAssessment>,
+    acknowledge_warning: bool,
+    dry_run: bool,
+) -> Result<(), AppError> {
+    let Some(assessment) = assessment else {
+        return Ok(());
+    };
+    if assessment.projected_bytes > assessment.quota.max_bytes {
+        return Err(invalid(format!(
+            "Snapshot would exceed the vault quota: {} stored + {} new = {} bytes, maximum {} bytes",
+            assessment.current_bytes,
+            assessment.additional_bytes,
+            assessment.projected_bytes,
+            assessment.quota.max_bytes
+        )));
+    }
+    if dry_run {
+        println!(
+            "[DRY-RUN] Quota projection: {} stored + {} new = {} of {} logical vault bytes",
+            assessment.current_bytes,
+            assessment.additional_bytes,
+            assessment.projected_bytes,
+            assessment.quota.max_bytes
+        );
+    }
+    if quota_warning(assessment) && !acknowledge_warning {
+        if dry_run {
+            println!(
+                "[DRY-RUN] Snapshot would use {} of {} quota bytes ({} new bytes), reaching the {}% warning threshold; a real snapshot would require --yes",
+                assessment.projected_bytes,
+                assessment.quota.max_bytes,
+                assessment.additional_bytes,
+                assessment.quota.warn_at_percent
+            );
+            return Ok(());
+        }
+        return Err(invalid(format!(
+            "Snapshot would use {} of {} quota bytes ({} new bytes), reaching the {}% warning threshold. Retry with --yes to acknowledge.",
+            assessment.projected_bytes,
+            assessment.quota.max_bytes,
+            assessment.additional_bytes,
+            assessment.quota.warn_at_percent
+        )));
+    }
+    Ok(())
+}
+
+fn parse_size(value: &str) -> Result<u64, AppError> {
+    let value = value.trim().to_ascii_uppercase();
+    let split = value
+        .find(|character: char| !character.is_ascii_digit())
+        .unwrap_or(value.len());
+    if split == 0
+        || !value[split..]
+            .trim()
+            .chars()
+            .all(|character| character.is_ascii_alphabetic())
+    {
+        return Err(invalid(format!(
+            "Invalid quota size {value:?}; use a whole number with B, KiB, MiB, GiB, or TiB"
+        )));
+    }
+    let amount: u64 = value[..split]
+        .parse()
+        .map_err(|_| invalid(format!("Invalid quota size: {value:?}")))?;
+    let multiplier = match value[split..].trim() {
+        "" | "B" => 1,
+        "KB" | "KIB" => 1024,
+        "MB" | "MIB" => 1024_u64.pow(2),
+        "GB" | "GIB" => 1024_u64.pow(3),
+        "TB" | "TIB" => 1024_u64.pow(4),
+        unit => return Err(invalid(format!("Unsupported quota size unit: {unit}"))),
+    };
+    amount
+        .checked_mul(multiplier)
+        .ok_or_else(|| invalid("Quota size is too large"))
+}
+
+pub fn quota_set(
+    path: &Path,
+    max_size: &str,
+    warn_at_percent: u8,
+    dry_run: bool,
+) -> Result<(), AppError> {
+    let root = initialized(path)?;
+    let quota = Quota {
+        format: QUOTA_FORMAT.into(),
+        version: QUOTA_VERSION,
+        max_bytes: parse_size(max_size)?,
+        warn_at_percent,
+    };
+    validate_quota(&quota)?;
+    if dry_run {
+        super::ensure_unlocked(&root)?;
+        let stored = stored_vault_bytes(&root)?;
+        if stored > quota.max_bytes {
+            return Err(invalid(format!(
+                "Cannot set a {} byte quota below existing {} byte logical vault usage",
+                quota.max_bytes, stored
+            )));
+        }
+        println!(
+            "[DRY-RUN] Would set a {} byte logical vault-storage quota with a {}% warning threshold at {root:?}; no configuration written",
+            quota.max_bytes, quota.warn_at_percent
+        );
+        return Ok(());
+    }
+    let lock = VaultLock::acquire(&root)?;
+    let result = (|| {
+        initialized(&root)?;
+        let stored = stored_vault_bytes(&root)?;
+        if stored > quota.max_bytes {
+            return Err(invalid(format!(
+                "Cannot set a {} byte quota below existing {} byte logical vault usage",
+                quota.max_bytes, stored
+            )));
+        }
+        let bytes = serde_json::to_vec_pretty(&quota)
+            .map_err(|error| invalid(format!("Could not encode quota configuration: {error}")))?;
+        super::with_scratch(&root, |scratch| {
+            let staged = scratch.join(QUOTA_FILE);
+            super::write_new(&staged, &bytes)?;
+            let destination = quota_path(&root);
+            io_at(
+                fs::rename(&staged, &destination),
+                "publish quota configuration",
+                &destination,
+            )?;
+            if load_quota(&root)? != Some(quota.clone()) {
+                return Err(invalid("Published quota configuration did not verify"));
+            }
+            Ok(())
+        })
+    })();
+    combine(result, lock.release())?;
+    println!(
+        "Vault quota set: {} logical vault bytes maximum; --yes is required at {}% or above",
+        quota.max_bytes, quota.warn_at_percent
+    );
+    Ok(())
+}
+
+pub fn quota_show(path: &Path, json: bool) -> Result<(), AppError> {
+    let root = initialized(path)?;
+    let quota = load_quota(&root)?;
+    let stored_bytes = stored_vault_bytes(&root)?;
+    let report = QuotaReport {
+        vault: root.display().to_string(),
+        configured: quota.is_some(),
+        stored_bytes,
+        max_bytes: quota.as_ref().map(|quota| quota.max_bytes),
+        available_bytes: quota
+            .as_ref()
+            .map(|quota| quota.max_bytes.saturating_sub(stored_bytes)),
+        warn_at_percent: quota.as_ref().map(|quota| quota.warn_at_percent),
+    };
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report)
+                .map_err(|error| invalid(format!("Could not encode quota report: {error}")))?
+        );
+    } else if let Some(quota) = quota {
+        println!(
+            "Quota: {} of {} logical vault bytes used; {} bytes available; warning at {}%",
+            stored_bytes,
+            quota.max_bytes,
+            quota.max_bytes.saturating_sub(stored_bytes),
+            quota.warn_at_percent
+        );
+    } else {
+        println!("No quota configured; {stored_bytes} logical vault bytes currently stored");
+    }
+    Ok(())
 }
 
 fn valid_id(id: &str) -> bool {
@@ -411,6 +742,7 @@ fn capture(
     source: &Path,
     label: Option<String>,
     scratch: Option<&Path>,
+    acknowledge_quota_warning: bool,
 ) -> Result<Snapshot, AppError> {
     label_check(label.as_deref())?;
     let source: PathBuf = source.components().collect();
@@ -443,6 +775,8 @@ fn capture(
         entries: scan(&source)?,
     };
     let bytes = encode_manifest(&manifest)?;
+    let quota = quota_assessment(root, &manifest, &bytes)?;
+    enforce_quota(quota.as_ref(), acknowledge_quota_warning, scratch.is_none())?;
     let mut objects = BTreeMap::new();
     for entry in &manifest.entries {
         if let Entry::File { path, sha256, size } = entry {
@@ -488,7 +822,7 @@ pub fn create(
     label: Option<String>,
     dry_run: bool,
 ) -> Result<(), AppError> {
-    create_selected(path, Some(source), None, label, dry_run)
+    create_selected(path, Some(source), None, label, dry_run, false)
 }
 
 pub fn create_selected(
@@ -497,6 +831,7 @@ pub fn create_selected(
     profile: Option<&str>,
     label: Option<String>,
     dry_run: bool,
+    acknowledge_quota_warning: bool,
 ) -> Result<(), AppError> {
     let root = initialized(path)?;
     let source = match (source, profile) {
@@ -511,7 +846,7 @@ pub fn create_selected(
     };
     if dry_run {
         super::ensure_unlocked(&root)?;
-        let snapshot = capture(&root, &source, label, None)?;
+        let snapshot = capture(&root, &source, label, None, acknowledge_quota_warning)?;
         let (files, bytes) = totals(&snapshot.manifest)?;
         println!(
             "[DRY-RUN] Would snapshot {source:?}: {files} files, {bytes} bytes; no objects or manifest written"
@@ -523,7 +858,13 @@ pub fn create_selected(
     let result = (|| {
         initialized(&root)?;
         super::with_scratch(&root, |scratch| {
-            snapshot = Some(capture(&root, &source, label, Some(scratch))?);
+            snapshot = Some(capture(
+                &root,
+                &source,
+                label,
+                Some(scratch),
+                acknowledge_quota_warning,
+            )?);
             Ok(())
         })
     })();
@@ -534,6 +875,13 @@ pub fn create_selected(
         "Snapshot {} created: {files} files, {bytes} bytes",
         snapshot.id
     );
+    if let Some(quota) = load_quota(&root)? {
+        let stored = stored_vault_bytes(&root)?;
+        println!(
+            "Quota usage: {stored} of {} logical vault bytes (warning at {}%)",
+            quota.max_bytes, quota.warn_at_percent
+        );
+    }
     Ok(())
 }
 

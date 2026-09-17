@@ -241,6 +241,78 @@ fn prune_rejects_invalid_or_unknown_protection_requests() {
 }
 
 #[test]
+fn quota_blocks_hard_limit_before_storing_new_objects() {
+    let (_temp, vault, saves) = setup("snapshot-quota-hard-limit");
+    let source = saves.join("save.dat");
+    quota_set(&vault, "20KiB", 80, false).unwrap();
+    fs::write(&source, vec![b'1'; 15_000]).unwrap();
+    create(&vault, &source, None, false).unwrap();
+    assert_eq!(count(&vault, "objects"), 1);
+    assert_eq!(count(&vault, "snapshots"), 1);
+
+    fs::write(&source, vec![b'a'; 6_000]).unwrap();
+    assert!(create_selected(&vault, Some(&source), None, None, false, true).is_err());
+    assert_eq!(count(&vault, "objects"), 1);
+    assert_eq!(count(&vault, "snapshots"), 1);
+}
+
+#[test]
+fn quota_counts_new_snapshot_manifests_even_when_objects_are_reused() {
+    let (_temp, vault, saves) = setup("snapshot-quota-manifest");
+    let source = saves.join("save.dat");
+    fs::write(&source, b"save").unwrap();
+    create(&vault, &source, Some("first".into()), false).unwrap();
+    let current = stored_vault_bytes(&vault).unwrap();
+    quota_set(&vault, &format!("{current}B"), 99, false).unwrap();
+
+    assert!(
+        create_selected(
+            &vault,
+            Some(&source),
+            None,
+            Some("second".into()),
+            false,
+            true,
+        )
+        .is_err()
+    );
+    assert_eq!(count(&vault, "objects"), 1);
+    assert_eq!(count(&vault, "snapshots"), 1);
+}
+
+#[test]
+fn quota_warning_requires_explicit_acknowledgement_and_updates_safely() {
+    let (_temp, vault, saves) = setup("snapshot-quota-warning");
+    let source = saves.join("save.dat");
+    quota_set(&vault, "20KiB", 90, false).unwrap();
+    quota_set(&vault, "20KiB", 80, false).unwrap();
+    assert_eq!(load_quota(&vault).unwrap().unwrap().warn_at_percent, 80);
+
+    fs::write(&source, vec![b'1'; 10_000]).unwrap();
+    create(&vault, &source, None, false).unwrap();
+    fs::write(&source, vec![b'a'; 7_000]).unwrap();
+    assert!(create_selected(&vault, Some(&source), None, None, false, false).is_err());
+    assert_eq!(count(&vault, "objects"), 1);
+    assert_eq!(count(&vault, "snapshots"), 1);
+
+    create_selected(&vault, Some(&source), None, None, false, true).unwrap();
+    assert_eq!(count(&vault, "objects"), 2);
+    assert_eq!(count(&vault, "snapshots"), 2);
+}
+
+#[test]
+fn dry_run_quota_warning_never_writes_objects_or_history() {
+    let (_temp, vault, saves) = setup("snapshot-quota-dry-run");
+    let source = saves.join("save.dat");
+    quota_set(&vault, "10KiB", 80, false).unwrap();
+    fs::write(&source, vec![b'1'; 8_000]).unwrap();
+
+    create_selected(&vault, Some(&source), None, None, true, false).unwrap();
+    assert_eq!(count(&vault, "objects"), 0);
+    assert_eq!(count(&vault, "snapshots"), 0);
+}
+
+#[test]
 fn diff_reports_added_modified_and_removed_entries() {
     let (_temp, vault, saves) = setup("snapshot-diff");
     fs::write(saves.join("modified.txt"), b"before").unwrap();

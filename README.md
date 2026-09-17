@@ -50,11 +50,15 @@ arkive compress ./saves ./saves.tar.zst --method zstd
 arkive vault init /mnt/saves/arkive
 arkive vault check /mnt/saves/arkive
 arkive vault health /mnt/saves/arkive
+arkive vault quota set /mnt/saves/arkive --max-size 100GiB --warn-at 80
+arkive vault quota show /mnt/saves/arkive
 arkive --dry-run vault gc /mnt/saves/arkive
 arkive --dry-run vault prune /mnt/saves/arkive --keep-last 20
 
 # Capture and verify a save snapshot.
 arkive vault snapshot /mnt/saves/arkive ./saves --label "Before boss fight"
+# If this reaches the configured quota warning threshold, review then add --yes.
+arkive vault snapshot /mnt/saves/arkive ./saves --label "Before boss fight" --yes
 arkive vault snapshots /mnt/saves/arkive
 arkive vault verify-snapshot /mnt/saves/arkive SNAPSHOT_ID
 arkive vault status /mnt/saves/arkive ./saves

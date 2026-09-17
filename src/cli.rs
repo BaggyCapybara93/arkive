@@ -282,6 +282,11 @@ pub enum VaultCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Configure and inspect the logical vault-storage quota
+    Quota {
+        #[command(subcommand)]
+        command: QuotaCommand,
+    },
     /// Snapshot a save file or directory into an initialized vault
     Snapshot {
         path: PathBuf,
@@ -294,6 +299,9 @@ pub enum VaultCommand {
         /// Name of a configured game profile to snapshot
         #[arg(long, required_unless_present = "source", conflicts_with = "source")]
         profile: Option<String>,
+        /// Acknowledge a configured storage-quota warning for this snapshot
+        #[arg(long)]
+        yes: bool,
     },
     /// List snapshot history (manifest integrity is checked; objects are not read)
     Snapshots {
@@ -366,6 +374,27 @@ pub enum ProfileCommand {
     },
     /// Remove a profile without deleting snapshots or save data
     Remove { path: PathBuf, name: String },
+}
+
+#[derive(Subcommand)]
+pub enum QuotaCommand {
+    /// Set the maximum logical storage used by snapshots and their objects
+    Set {
+        path: PathBuf,
+        /// Maximum logical vault storage, for example 50GiB
+        #[arg(long)]
+        max_size: String,
+        /// Require --yes once this percentage of the maximum would be used (1-99)
+        #[arg(long, default_value_t = 80)]
+        warn_at: u8,
+    },
+    /// Show configured quota and current logical vault usage
+    Show {
+        path: PathBuf,
+        /// Print the quota report as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn handle_move(
@@ -595,17 +624,31 @@ pub fn cli_handler(cmd: Command, settings: &Settings) -> Result<(), AppError> {
             } => {
                 crate::vault::snapshots::prune(&path, keep_last, &protected, settings.dry_run, json)
             }
+            VaultCommand::Quota { command } => match command {
+                QuotaCommand::Set {
+                    path,
+                    max_size,
+                    warn_at,
+                } => {
+                    crate::vault::snapshots::quota_set(&path, &max_size, warn_at, settings.dry_run)
+                }
+                QuotaCommand::Show { path, json } => {
+                    crate::vault::snapshots::quota_show(&path, json)
+                }
+            },
             VaultCommand::Snapshot {
                 path,
                 source,
                 label,
                 profile,
+                yes,
             } => crate::vault::snapshots::create_selected(
                 &path,
                 source.as_deref(),
                 profile.as_deref(),
                 label,
                 settings.dry_run,
+                yes,
             ),
             VaultCommand::Snapshots { path, json } => crate::vault::snapshots::list(&path, json),
             VaultCommand::VerifySnapshot { path, snapshot } => {
