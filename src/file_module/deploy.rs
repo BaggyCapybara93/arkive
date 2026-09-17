@@ -1,4 +1,5 @@
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -8,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::file_module::compress::CompressionMethod;
 use crate::file_module::copy::copy_dir_recursive;
 use crate::file_module::error::FileManagerError;
+use crate::file_module::ops::{create_temp_dir_sibling, create_temp_file_sibling};
 use crate::settings::Settings;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -140,10 +142,19 @@ pub fn deploy(
 
     match manifest.kind {
         BackupKind::Copy | BackupKind::Move => {
-            if force && target_is_occupied && !can_merge_partial_move {
-                remove_existing(&target)?;
+            if force && target_is_occupied && can_merge_partial_move {
+                // A partial move intentionally merges the backed-up subset into
+                // the existing source tree. `copy_dir_recursive` stages the
+                // complete merged result before replacing the destination.
+                restore_copy(backup, &target)?;
+            } else {
+                let staged = stage_copy(backup, &target)?;
+                let result = publish_staged(&staged, &target, force);
+                if result.is_err() {
+                    let _ = remove_staged(&staged);
+                }
+                result?;
             }
-            restore_copy(backup, &target)?
         }
         BackupKind::Compress => restore_archive(
             backup,
@@ -151,6 +162,7 @@ pub fn deploy(
             manifest.compression_method.ok_or_else(|| {
                 FileManagerError::InvalidInput("Compression method missing from metadata".into())
             })?,
+            force,
         )?,
     }
 
@@ -182,10 +194,182 @@ fn restore_copy(backup: &Path, target: &Path) -> Result<(), FileManagerError> {
     }
 }
 
+/// Build a complete deployment beside its final destination before touching
+/// that destination. This keeps failed reads and copies from damaging a
+/// previous restore.
+fn stage_copy(backup: &Path, target: &Path) -> Result<PathBuf, FileManagerError> {
+    let metadata = fs::symlink_metadata(backup)?;
+    if metadata.file_type().is_symlink() {
+        return Err(FileManagerError::InvalidInput(format!(
+            "Backup must not be a symlink: {backup:?}"
+        )));
+    }
+
+    if metadata.is_dir() {
+        let staged = create_temp_dir_sibling(target)?;
+        let result = copy_dir_recursive(backup, &staged, None);
+        if result.is_err() {
+            let _ = fs::remove_dir_all(&staged);
+        }
+        result.map(|()| staged)
+    } else if metadata.is_file() {
+        let staged = create_temp_file_sibling(target)?;
+        let result = fs::copy(backup, &staged).map(|_| ());
+        if result.is_err() {
+            let _ = fs::remove_file(&staged);
+        }
+        result.map_err(Into::into).map(|()| staged)
+    } else {
+        Err(FileManagerError::InvalidInput(format!(
+            "Backup does not exist or is not a regular file/directory: {backup:?}"
+        )))
+    }
+}
+
+/// Publish a staged file or directory. Without `--force`, every creation is
+/// no-clobber, including a destination that appears after the initial CLI
+/// validation. With `--force`, keep the displaced entry until the staged
+/// replacement is installed so a failed final rename can be rolled back.
+fn publish_staged(staged: &Path, target: &Path, force: bool) -> Result<(), FileManagerError> {
+    if target_is_occupied(target)? {
+        if !force {
+            return Err(FileManagerError::InvalidInput(format!(
+                "Restore destination {target:?} appeared while preparing deployment; refusing to overwrite it"
+            )));
+        }
+        return replace_staged(staged, target);
+    }
+
+    if force {
+        // `--force` explicitly authorizes replacing a target that appears
+        // between this check and the final rename.
+        return match fs::rename(staged, target) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                replace_staged(staged, target)
+            }
+            Err(error) => Err(error.into()),
+        };
+    }
+
+    publish_new(staged, target)
+}
+
+fn publish_new(staged: &Path, target: &Path) -> Result<(), FileManagerError> {
+    let metadata = fs::symlink_metadata(staged)?;
+    if metadata.file_type().is_symlink() || (!metadata.is_file() && !metadata.is_dir()) {
+        return Err(FileManagerError::InvalidInput(format!(
+            "Staged deployment is not a regular file or directory: {staged:?}"
+        )));
+    }
+
+    if metadata.is_file() {
+        install_file_no_clobber(staged, target)
+    } else {
+        // `create_dir` is an exclusive reservation: a late creator cannot be
+        // overwritten by the directory deployment.
+        fs::create_dir(target)?;
+        let result = move_directory_contents_no_clobber(staged, target);
+        if result.is_ok() {
+            fs::remove_dir(staged)?;
+        } else {
+            // This directory was exclusively created by this operation, so it
+            // is safe to clean up a partial deployment on failure.
+            let _ = fs::remove_dir_all(target);
+        }
+        result
+    }
+}
+
+fn install_file_no_clobber(staged: &Path, target: &Path) -> Result<(), FileManagerError> {
+    match fs::hard_link(staged, target) {
+        Ok(()) => {
+            fs::remove_file(staged)?;
+            Ok(())
+        }
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            Err(FileManagerError::InvalidInput(format!(
+                "Restore destination {target:?} appeared while preparing deployment; refusing to overwrite it"
+            )))
+        }
+        // SMB/NFS and some Windows filesystems do not permit hard links. An
+        // exclusive create retains the no-clobber guarantee on those shares.
+        Err(_) => copy_file_no_clobber(staged, target),
+    }
+}
+
+fn copy_file_no_clobber(source: &Path, target: &Path) -> Result<(), FileManagerError> {
+    let mut output = match OpenOptions::new().write(true).create_new(true).open(target) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            return Err(FileManagerError::InvalidInput(format!(
+                "Restore destination {target:?} appeared while preparing deployment; refusing to overwrite it"
+            )));
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let result: Result<(), io::Error> = (|| {
+        let mut input = fs::File::open(source)?;
+        io::copy(&mut input, &mut output)?;
+        output.sync_all()?;
+        Ok(())
+    })();
+    drop(output);
+    if result.is_ok() {
+        fs::remove_file(source)?;
+    } else {
+        let _ = fs::remove_file(target);
+    }
+    result.map_err(Into::into)
+}
+
+fn move_directory_contents_no_clobber(
+    source: &Path,
+    target: &Path,
+) -> Result<(), FileManagerError> {
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        let metadata = fs::symlink_metadata(&source_path)?;
+        if metadata.file_type().is_symlink() || (!metadata.is_file() && !metadata.is_dir()) {
+            return Err(FileManagerError::InvalidInput(format!(
+                "Staged deployment contains an unsupported entry: {source_path:?}"
+            )));
+        }
+        if metadata.is_dir() {
+            fs::create_dir(&target_path)?;
+            move_directory_contents_no_clobber(&source_path, &target_path)?;
+            fs::remove_dir(&source_path)?;
+        } else {
+            install_file_no_clobber(&source_path, &target_path)?;
+        }
+    }
+    Ok(())
+}
+
+fn replace_staged(staged: &Path, target: &Path) -> Result<(), FileManagerError> {
+    let displaced = create_temp_dir_sibling(target)?;
+    fs::remove_dir(&displaced)?;
+    fs::rename(target, &displaced)?;
+
+    match fs::rename(staged, target) {
+        Ok(()) => {
+            let _ = remove_staged(&displaced);
+            Ok(())
+        }
+        Err(error) => {
+            let _ = fs::rename(&displaced, target);
+            Err(error.into())
+        }
+    }
+}
+
 fn restore_archive(
     backup: &Path,
     target: &Path,
     method: CompressionMethod,
+    force: bool,
 ) -> Result<(), FileManagerError> {
     let parent = target.parent().unwrap_or_else(|| Path::new("."));
     let staging = parent.join(format!(
@@ -217,19 +401,16 @@ fn restore_archive(
             ));
         }
         // Do not replace an existing deployment until the archive has been
-        // opened and extracted successfully.
-        if target.exists() {
-            remove_existing(target)?;
-        }
-        fs::rename(root, target)?;
-        Ok(())
+        // opened and extracted successfully. `publish_staged` also refuses a
+        // target that appeared during extraction unless --force was supplied.
+        publish_staged(&root, target, force)
     })();
 
     let _ = fs::remove_dir_all(&staging);
     result
 }
 
-fn remove_existing(path: &Path) -> Result<(), FileManagerError> {
+fn remove_staged(path: &Path) -> Result<(), FileManagerError> {
     let metadata = fs::symlink_metadata(path)?;
     if metadata.is_dir() && !metadata.file_type().is_symlink() {
         fs::remove_dir_all(path)?;
@@ -241,8 +422,11 @@ fn remove_existing(path: &Path) -> Result<(), FileManagerError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BackupKind, deploy, save_manifest, save_manifest_with_ignores};
+    use super::{
+        BackupKind, deploy, publish_new, publish_staged, save_manifest, save_manifest_with_ignores,
+    };
     use crate::settings::Settings;
+    use crate::test::TestDir;
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
@@ -310,6 +494,26 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn directory_backup_deploys_through_the_staged_no_clobber_path() {
+        let temp = TestDir::new("deploy-directory");
+        let original = temp.path().join("original");
+        let backup = temp.path().join("backup");
+        let target = temp.path().join("target");
+        fs::create_dir_all(backup.join("nested")).unwrap();
+        fs::write(backup.join("save.dat"), b"save").unwrap();
+        fs::write(backup.join("nested/settings.dat"), b"settings").unwrap();
+        save_manifest(&original, &backup, BackupKind::Copy, None).unwrap();
+
+        deploy(&backup, Some(&target), false, false, &Settings::default()).unwrap();
+
+        assert_eq!(fs::read(target.join("save.dat")).unwrap(), b"save");
+        assert_eq!(
+            fs::read(target.join("nested/settings.dat")).unwrap(),
+            b"settings"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn dangling_symlink_destination_requires_force() {
@@ -337,5 +541,57 @@ mod tests {
                 .is_symlink()
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn late_file_destination_is_not_overwritten_without_force() {
+        let temp = TestDir::new("deploy-late-file");
+        let staged = temp.path().join("staged.txt");
+        let target = temp.path().join("target.txt");
+        fs::write(&staged, b"deployment").unwrap();
+        fs::write(&target, b"late writer").unwrap();
+
+        // Model a destination created after `deploy` made its initial check.
+        assert!(publish_new(&staged, &target).is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"late writer");
+        assert_eq!(fs::read(&staged).unwrap(), b"deployment");
+    }
+
+    #[test]
+    fn late_directory_destination_is_not_overwritten_without_force() {
+        let temp = TestDir::new("deploy-late-directory");
+        let staged = temp.path().join("staged");
+        let target = temp.path().join("target");
+        fs::create_dir(&staged).unwrap();
+        fs::write(staged.join("replacement.txt"), b"deployment").unwrap();
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("keep.txt"), b"late writer").unwrap();
+
+        // This is the directory equivalent of a late destination collision.
+        assert!(publish_new(&staged, &target).is_err());
+        assert_eq!(fs::read(target.join("keep.txt")).unwrap(), b"late writer");
+        assert_eq!(
+            fs::read(staged.join("replacement.txt")).unwrap(),
+            b"deployment"
+        );
+    }
+
+    #[test]
+    fn forced_publish_replaces_only_after_staging_is_complete() {
+        let temp = TestDir::new("deploy-force-replace");
+        let staged = temp.path().join("staged");
+        let target = temp.path().join("target");
+        fs::create_dir(&staged).unwrap();
+        fs::write(staged.join("replacement.txt"), b"deployment").unwrap();
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("keep.txt"), b"previous deployment").unwrap();
+
+        publish_staged(&staged, &target, true).unwrap();
+        assert!(!staged.exists());
+        assert_eq!(
+            fs::read(target.join("replacement.txt")).unwrap(),
+            b"deployment"
+        );
+        assert!(!target.join("keep.txt").exists());
     }
 }
