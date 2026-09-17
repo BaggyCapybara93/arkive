@@ -74,4 +74,7 @@ arkive deploy saves.tar.zst --use-recorded-destination
 
 Existing destinations are refused unless `--force` is supplied. Deployment
 leaves the backup intact. Compressed backups are extracted according to their
-recorded compression metadata.
+recorded compression metadata. To contain decompression bombs and malformed
+archives, compressed deployment accepts at most 100,000 entries, 8 GiB per
+file, 16 GiB total expanded data, 4 KiB paths, and 128 path components. An
+archive exceeding a limit is rejected before it is published to the destination.

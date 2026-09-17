@@ -1,5 +1,5 @@
 use std::fs::{self, OpenOptions};
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -11,6 +11,29 @@ use crate::file_module::copy::copy_dir_recursive;
 use crate::file_module::error::FileManagerError;
 use crate::file_module::ops::{create_temp_dir_sibling, create_temp_file_sibling};
 use crate::settings::Settings;
+
+const MAX_ARCHIVE_ENTRIES: u64 = 100_000;
+const MAX_ARCHIVE_FILE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const MAX_ARCHIVE_TOTAL_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+const MAX_ARCHIVE_PATH_BYTES: usize = 4 * 1024;
+const MAX_ARCHIVE_PATH_DEPTH: usize = 128;
+
+#[derive(Clone, Copy)]
+struct ArchiveLimits {
+    entries: u64,
+    file_bytes: u64,
+    total_bytes: u64,
+    path_bytes: usize,
+    path_depth: usize,
+}
+
+const ARCHIVE_LIMITS: ArchiveLimits = ArchiveLimits {
+    entries: MAX_ARCHIVE_ENTRIES,
+    file_bytes: MAX_ARCHIVE_FILE_BYTES,
+    total_bytes: MAX_ARCHIVE_TOTAL_BYTES,
+    path_bytes: MAX_ARCHIVE_PATH_BYTES,
+    path_depth: MAX_ARCHIVE_PATH_DEPTH,
+};
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -365,6 +388,93 @@ fn replace_staged(staged: &Path, target: &Path) -> Result<(), FileManagerError> 
     }
 }
 
+/// Extract an archive entry-by-entry so its advertised expansion cannot consume
+/// unbounded storage before deployment reaches its publish step. The tar crate
+/// still owns traversal and link-target validation during `unpack_in`.
+fn extract_archive_limited<R: Read>(
+    reader: R,
+    staging: &Path,
+    limits: ArchiveLimits,
+) -> Result<(), FileManagerError> {
+    let mut archive = tar::Archive::new(reader);
+    let mut entries = 0u64;
+    let mut total_bytes = 0u64;
+
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        entries = entries
+            .checked_add(1)
+            .ok_or_else(|| FileManagerError::InvalidInput("Archive entry count overflow".into()))?;
+        if entries > limits.entries {
+            return Err(FileManagerError::InvalidInput(format!(
+                "Archive exceeds the {} entry limit",
+                limits.entries
+            )));
+        }
+
+        let path = entry.path()?.into_owned();
+        validate_archive_path(&path, limits)?;
+        let size = entry.size();
+        if size > limits.file_bytes {
+            return Err(FileManagerError::InvalidInput(format!(
+                "Archive entry {path:?} exceeds the {} byte per-file limit",
+                limits.file_bytes
+            )));
+        }
+        total_bytes = total_bytes.checked_add(size).ok_or_else(|| {
+            FileManagerError::InvalidInput("Archive expanded byte total overflow".into())
+        })?;
+        if total_bytes > limits.total_bytes {
+            return Err(FileManagerError::InvalidInput(format!(
+                "Archive exceeds the {} byte expanded-size limit",
+                limits.total_bytes
+            )));
+        }
+
+        // Restores do not need archive ownership, mode, or timestamp metadata.
+        entry.set_preserve_permissions(false);
+        entry.set_preserve_mtime(false);
+        entry.unpack_in(staging)?;
+    }
+    Ok(())
+}
+
+fn validate_archive_path(path: &Path, limits: ArchiveLimits) -> Result<(), FileManagerError> {
+    let path_bytes = path.as_os_str().to_string_lossy().len();
+    if path_bytes == 0 || path_bytes > limits.path_bytes {
+        return Err(FileManagerError::InvalidInput(format!(
+            "Archive path {path:?} is empty or exceeds the {} byte limit",
+            limits.path_bytes
+        )));
+    }
+
+    let mut depth = 0usize;
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(_) => {
+                depth = depth.checked_add(1).ok_or_else(|| {
+                    FileManagerError::InvalidInput("Archive path depth overflow".into())
+                })?;
+            }
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => {
+                return Err(FileManagerError::InvalidInput(format!(
+                    "Archive path is not a relative descendant: {path:?}"
+                )));
+            }
+        }
+    }
+    if depth > limits.path_depth {
+        return Err(FileManagerError::InvalidInput(format!(
+            "Archive path {path:?} exceeds the {} component depth limit",
+            limits.path_depth
+        )));
+    }
+    Ok(())
+}
+
 fn restore_archive(
     backup: &Path,
     target: &Path,
@@ -382,10 +492,12 @@ fn restore_archive(
     let result = (|| {
         let file = fs::File::open(backup)?;
         match method {
-            CompressionMethod::Gzip => tar::Archive::new(GzDecoder::new(file)).unpack(&staging)?,
+            CompressionMethod::Gzip => {
+                extract_archive_limited(GzDecoder::new(file), &staging, ARCHIVE_LIMITS)?
+            }
             CompressionMethod::Zstd => {
                 let decoder = zstd::Decoder::new(file)?;
-                tar::Archive::new(decoder).unpack(&staging)?;
+                extract_archive_limited(decoder, &staging, ARCHIVE_LIMITS)?;
             }
         }
 
@@ -423,13 +535,34 @@ fn remove_staged(path: &Path) -> Result<(), FileManagerError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        BackupKind, deploy, publish_new, publish_staged, save_manifest, save_manifest_with_ignores,
+        ArchiveLimits, BackupKind, deploy, extract_archive_limited, publish_new, publish_staged,
+        save_manifest, save_manifest_with_ignores,
     };
     use crate::settings::Settings;
     use crate::test::TestDir;
+    use flate2::Compression;
+    use flate2::read::GzDecoder;
+    use flate2::write::GzEncoder;
     use std::fs;
+    use std::io::Cursor;
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
+
+    fn gzip_archive(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let encoder = GzEncoder::new(Vec::new(), Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        for (path, data) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o600);
+            header.set_entry_type(tar::EntryType::Regular);
+            header.set_cksum();
+            archive
+                .append_data(&mut header, path, Cursor::new(*data))
+                .unwrap();
+        }
+        archive.into_inner().unwrap().finish().unwrap()
+    }
 
     #[test]
     fn copied_backup_requires_explicit_authorization_for_recorded_destination() {
@@ -593,5 +726,102 @@ mod tests {
             b"deployment"
         );
         assert!(!target.join("keep.txt").exists());
+    }
+
+    #[test]
+    fn archive_extraction_stops_at_the_entry_limit() {
+        let temp = TestDir::new("deploy-archive-entry-limit");
+        let bytes = gzip_archive(&[("first", b"one"), ("second", b"two")]);
+        let limits = ArchiveLimits {
+            entries: 1,
+            file_bytes: 10,
+            total_bytes: 10,
+            path_bytes: 64,
+            path_depth: 4,
+        };
+
+        assert!(
+            extract_archive_limited(GzDecoder::new(Cursor::new(bytes)), temp.path(), limits)
+                .is_err()
+        );
+        assert_eq!(fs::read(temp.path().join("first")).unwrap(), b"one");
+        assert!(!temp.path().join("second").exists());
+    }
+
+    #[test]
+    fn archive_extraction_rejects_expanded_byte_budget_before_writing_entry() {
+        let temp = TestDir::new("deploy-archive-byte-limit");
+        let bytes = gzip_archive(&[("first", b"four"), ("second", b"four")]);
+        let limits = ArchiveLimits {
+            entries: 3,
+            file_bytes: 4,
+            total_bytes: 6,
+            path_bytes: 64,
+            path_depth: 4,
+        };
+
+        assert!(
+            extract_archive_limited(GzDecoder::new(Cursor::new(bytes)), temp.path(), limits)
+                .is_err()
+        );
+        assert_eq!(fs::read(temp.path().join("first")).unwrap(), b"four");
+        assert!(!temp.path().join("second").exists());
+    }
+
+    #[test]
+    fn archive_extraction_rejects_oversized_file_before_writing() {
+        let temp = TestDir::new("deploy-archive-file-limit");
+        let bytes = gzip_archive(&[("oversized", b"five!")]);
+        let limits = ArchiveLimits {
+            entries: 1,
+            file_bytes: 4,
+            total_bytes: 10,
+            path_bytes: 64,
+            path_depth: 4,
+        };
+
+        assert!(
+            extract_archive_limited(GzDecoder::new(Cursor::new(bytes)), temp.path(), limits)
+                .is_err()
+        );
+        assert!(!temp.path().join("oversized").exists());
+    }
+
+    #[test]
+    fn archive_extraction_rejects_excessive_path_depth_before_writing() {
+        let temp = TestDir::new("deploy-archive-depth-limit");
+        let bytes = gzip_archive(&[("one/two/three", b"data")]);
+        let limits = ArchiveLimits {
+            entries: 1,
+            file_bytes: 10,
+            total_bytes: 10,
+            path_bytes: 64,
+            path_depth: 2,
+        };
+
+        assert!(
+            extract_archive_limited(GzDecoder::new(Cursor::new(bytes)), temp.path(), limits)
+                .is_err()
+        );
+        assert!(!temp.path().join("one").exists());
+    }
+
+    #[test]
+    fn compressed_deploy_uses_the_bounded_extractor() {
+        let temp = TestDir::new("deploy-archive");
+        let original = temp.path().join("original.dat");
+        let backup = temp.path().join("backup.tar.gz");
+        let target = temp.path().join("target.dat");
+        fs::write(&backup, gzip_archive(&[("save.dat", b"save")])).unwrap();
+        save_manifest(
+            &original,
+            &backup,
+            BackupKind::Compress,
+            Some(crate::file_module::compress::CompressionMethod::Gzip),
+        )
+        .unwrap();
+
+        deploy(&backup, Some(&target), false, false, &Settings::default()).unwrap();
+        assert_eq!(fs::read(target).unwrap(), b"save");
     }
 }
