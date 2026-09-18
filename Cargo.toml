@@ -19,4 +19,5 @@ sha2 = "=0.11.0"
 tar = "0.4.46"
 thiserror = "2.0.18"
 xz2 = "0.1.7"
+zip = { version = "=8.6.0", default-features = false, features = ["deflate"] }
 zstd = "0.13.3"

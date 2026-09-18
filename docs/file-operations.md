@@ -38,7 +38,7 @@ arkive copy --recursive myproject/ backup/myproject/ --metadata
 ## Compress
 
 ```text
-arkive compress [--method <METHOD>] <SRC> <DEST>
+arkive compress [--format <FORMAT>] [--method <METHOD>] <SRC> <DEST>
 ```
 
 Create a tar archive compressed with gzip, Zstandard, LZ4, XZ, or bzip2. Accepted
@@ -50,12 +50,18 @@ LZ4 favors quick archive creation and restoration; XZ favors smaller archives
 at the cost of more CPU time. bzip2 is a widely supported compatibility format,
 but is generally slower than LZ4 or Zstandard.
 
+Use `--format zip` to create a Deflate-compressed `.zip` archive instead. ZIP is
+a separate container format, so it cannot be combined with `--method`. ZIP
+creation accepts regular files and directories, but rejects symbolic links to
+avoid portability surprises.
+
 ```bash
 arkive compress data/ backup/data.tar.gz
 arkive compress --method zstd data/ backup/data.tar.zst
 arkive compress --method lz4 data/ backup/data.tar.lz4
 arkive compress --method xz data/ backup/data.tar.xz
 arkive compress --method bzip2 data/ backup/data.tar.bz2
+arkive compress --format zip data/ backup/data.zip
 arkive compress data/ backup/data.tar.zst --metadata
 ```
 
@@ -82,8 +88,10 @@ arkive deploy saves.tar.zst --use-recorded-destination
 
 Existing destinations are refused unless `--force` is supplied. Deployment
 leaves the backup intact. Compressed backups are extracted according to their
-recorded compression metadata. To contain decompression bombs and malformed
-archives, compressed deployment accepts at most 100,000 entries, 8 GiB per
-file, 16 GiB total expanded data, 4 KiB paths, and 128 path components. An
-archive exceeding a limit is rejected before it is published to the destination.
-XZ deployment additionally caps decoder memory at 256 MiB.
+recorded archive format and compression metadata. To contain decompression bombs
+and malformed archives, compressed deployment accepts at most 100,000 entries,
+8 GiB per file, 16 GiB total expanded data, 4 KiB paths, and 128 path
+components. An archive exceeding a limit is rejected before it is published to
+the destination. XZ deployment additionally caps decoder memory at 256 MiB.
+ZIP deployment only accepts unencrypted Stored or Deflate entries and rejects
+unsafe paths, symbolic links, duplicate paths, and overlapping entries.

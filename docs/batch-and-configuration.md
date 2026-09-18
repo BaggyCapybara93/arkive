@@ -30,14 +30,22 @@ array. Supported `work_type` values are `move`, `copy`, `compress`, and
       "source": "data/",
       "destination": "backup/data.tar.xz",
       "compression_method": "xz"
+    },
+    {
+      "work_type": "compress",
+      "source": "portable-saves/",
+      "destination": "backup/portable-saves.zip",
+      "archive_format": "zip"
     }
   ]
 }
 ```
 
 Operations may use `source`, `destination`, `recursive`, `timestamp`,
-`compression_method`, and `cleanup`. Batch jobs may run in parallel, so avoid
-operations that modify overlapping paths.
+`compression_method`, `archive_format`, and `cleanup`. `archive_format` is
+`tar` by default; use `zip` for a Deflate-compressed ZIP archive.
+`compression_method` applies only to tar jobs. Batch jobs may run in parallel,
+so avoid operations that modify overlapping paths.
 
 ```bash
 arkive batch batch.json

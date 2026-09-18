@@ -9,7 +9,7 @@ and local-first game-save storage.
 ## What it does
 
 - Copy and move files or directory trees with transactional installation
-- Create gzip, Zstandard, LZ4, or XZ tar archives
+- Create gzip, Zstandard, LZ4, XZ, or bzip2 tar archives, plus portable ZIP archives
 - Create portable backup metadata and deploy backups safely
 - Rename, remove, deduplicate, and clean up files
 - Run file operations from JSON batch files

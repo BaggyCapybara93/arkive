@@ -218,9 +218,23 @@ pub fn validate_compress_path(
     Ok(())
 }
 
+/// Validates that a ZIP archive destination uses the portable ZIP extension.
+pub fn validate_zip_path(dst: &Path) -> Result<(), FileManagerError> {
+    let dst_str = dst.to_str().ok_or(FileManagerError::InvalidInput(
+        "Destination path is not valid UTF-8".into(),
+    ))?;
+    if dst_str.to_lowercase().ends_with(".zip") {
+        Ok(())
+    } else {
+        Err(FileManagerError::InvalidInput(format!(
+            "ZIP destinations must use the .zip extension: {dst:?}"
+        )))
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ensure_not_nested, validate_compress_path};
+    use super::{ensure_not_nested, validate_compress_path, validate_zip_path};
     use crate::file_module::compress::CompressionMethod;
     use crate::test::TestDir;
     use std::fs;
@@ -262,6 +276,14 @@ mod tests {
         assert!(
             validate_compress_path(Path::new("backup.tar.bz2"), CompressionMethod::Xz).is_err()
         );
+    }
+
+    #[test]
+    fn zip_extensions_are_validated_separately_from_tar_codecs() {
+        assert!(validate_zip_path(Path::new("backup.zip")).is_ok());
+        assert!(validate_zip_path(Path::new("backup.ZIP")).is_ok());
+        assert!(validate_zip_path(Path::new("backup.tar.gz")).is_err());
+        assert!(validate_zip_path(Path::new("backup.zipx")).is_err());
     }
 
     #[test]

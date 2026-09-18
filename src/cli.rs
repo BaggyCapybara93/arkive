@@ -2,7 +2,7 @@ use crate::batch_module::BatchHandler;
 use crate::error::AppError;
 use crate::file_module::FileManager;
 use crate::file_module::cleanup;
-use crate::file_module::compress::CompressionMethod;
+use crate::file_module::compress::{ArchiveFormat, CompressionMethod};
 use crate::file_module::deploy::{self, BackupKind};
 use crate::file_module::ignore::{IgnoreMatcher, IgnoreOptions};
 use crate::file_module::remove;
@@ -111,7 +111,7 @@ pub enum Command {
         ignore: IgnoreArgs,
     },
 
-    /// Compress a file or directory into a gzip-, Zstandard-, LZ4-, XZ-, or bzip2-compressed tar archive
+    /// Compress a file or directory into a tar archive or a portable ZIP archive
     Compress {
         /// Source path
         src: PathBuf,
@@ -121,6 +121,9 @@ pub enum Command {
 
         #[arg(long, help = "Compression method (gzip, zstd, lz4, xz, or bzip2)", value_parser = value_parser!(CompressionMethod))]
         method: Option<CompressionMethod>,
+
+        #[arg(long, help = "Archive format (tar or zip; default: tar)", value_parser = value_parser!(ArchiveFormat))]
+        format: Option<ArchiveFormat>,
 
         /// Save portable metadata so this archive can be deployed later
         #[arg(long)]
@@ -469,6 +472,7 @@ fn handle_compress(
     src: &Path,
     dest: &Path,
     method: Option<CompressionMethod>,
+    format: Option<ArchiveFormat>,
     metadata: bool,
     ignore_args: &IgnoreArgs,
     settings: &Settings,
@@ -476,18 +480,36 @@ fn handle_compress(
     let original = std::fs::canonicalize(src)?;
     let matcher = IgnoreMatcher::build(src, &IgnoreOptions::from(ignore_args))?;
     let fm = FileManager::new(src, dest, settings);
-    let compression_method = method.unwrap_or(settings.compression_method);
-    let (backup, ignored) =
-        fm.compress_path_filtered(compression_method, settings.use_timestamp, Some(&matcher))?;
+    let archive_format = format.unwrap_or_default();
+    let (backup, ignored, compression_method) = match archive_format {
+        ArchiveFormat::Tar => {
+            let compression_method = method.unwrap_or(settings.compression_method);
+            let (backup, ignored) = fm.compress_path_filtered(
+                compression_method,
+                settings.use_timestamp,
+                Some(&matcher),
+            )?;
+            (backup, ignored, Some(compression_method))
+        }
+        ArchiveFormat::Zip => {
+            if method.is_some() {
+                return Err(AppError::InvalidInput(
+                    "--method applies only to the tar archive format".into(),
+                ));
+            }
+            let (backup, ignored) =
+                fm.compress_zip_path_filtered(settings.use_timestamp, Some(&matcher))?;
+            (backup, ignored, None)
+        }
+    };
     print_ignore_summary(&ignored, settings);
     if metadata && !settings.dry_run {
-        deploy::save_manifest_with_ignores(
+        deploy::save_compressed_manifest_with_ignores(
             &original,
             &backup,
-            BackupKind::Compress,
-            Some(compression_method),
+            compression_method,
+            archive_format,
             matcher.descriptions(),
-            false,
         )?;
     }
     Ok(())
@@ -711,9 +733,10 @@ pub fn cli_handler(cmd: Command, settings: &Settings) -> Result<(), AppError> {
             src,
             dest,
             method,
+            format,
             metadata,
             ignore,
-        } => handle_compress(&src, &dest, method, metadata, &ignore, settings),
+        } => handle_compress(&src, &dest, method, format, metadata, &ignore, settings),
         Command::Deploy {
             backup,
             destination,

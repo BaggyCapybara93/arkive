@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -10,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use xz2::read::XzDecoder;
 use xz2::stream::Stream as XzStream;
 
-use crate::file_module::compress::CompressionMethod;
+use crate::file_module::compress::{ArchiveFormat, CompressionMethod};
 use crate::file_module::copy::copy_dir_recursive;
 use crate::file_module::error::FileManagerError;
 use crate::file_module::ops::{create_temp_dir_sibling, create_temp_file_sibling};
@@ -56,6 +57,8 @@ pub struct DeploymentManifest {
     backup_path: PathBuf,
     compression_method: Option<CompressionMethod>,
     #[serde(default)]
+    archive_format: ArchiveFormat,
+    #[serde(default)]
     ignore_rules: Vec<String>,
     #[serde(default)]
     partial_move: bool,
@@ -90,6 +93,44 @@ pub fn save_manifest_with_ignores(
     ignore_rules: &[String],
     partial_move: bool,
 ) -> Result<PathBuf, FileManagerError> {
+    save_manifest_with_format(
+        source,
+        backup,
+        kind,
+        compression_method,
+        ArchiveFormat::Tar,
+        ignore_rules,
+        partial_move,
+    )
+}
+
+pub fn save_compressed_manifest_with_ignores(
+    source: &Path,
+    backup: &Path,
+    compression_method: Option<CompressionMethod>,
+    archive_format: ArchiveFormat,
+    ignore_rules: &[String],
+) -> Result<PathBuf, FileManagerError> {
+    save_manifest_with_format(
+        source,
+        backup,
+        BackupKind::Compress,
+        compression_method,
+        archive_format,
+        ignore_rules,
+        false,
+    )
+}
+
+fn save_manifest_with_format(
+    source: &Path,
+    backup: &Path,
+    kind: BackupKind,
+    compression_method: Option<CompressionMethod>,
+    archive_format: ArchiveFormat,
+    ignore_rules: &[String],
+    partial_move: bool,
+) -> Result<PathBuf, FileManagerError> {
     let original_path = source.to_path_buf();
     let backup_path = fs::canonicalize(backup)?;
     let manifest = DeploymentManifest {
@@ -98,6 +139,7 @@ pub fn save_manifest_with_ignores(
         original_path,
         backup_path,
         compression_method,
+        archive_format,
         ignore_rules: ignore_rules.to_vec(),
         partial_move,
         created_at: Utc::now(),
@@ -184,14 +226,19 @@ pub fn deploy(
                 result?;
             }
         }
-        BackupKind::Compress => restore_archive(
-            backup,
-            &target,
-            manifest.compression_method.ok_or_else(|| {
-                FileManagerError::InvalidInput("Compression method missing from metadata".into())
-            })?,
-            force,
-        )?,
+        BackupKind::Compress => match manifest.archive_format {
+            ArchiveFormat::Tar => restore_archive(
+                backup,
+                &target,
+                manifest.compression_method.ok_or_else(|| {
+                    FileManagerError::InvalidInput(
+                        "Compression method missing from metadata".into(),
+                    )
+                })?,
+                force,
+            )?,
+            ArchiveFormat::Zip => restore_zip_archive(backup, &target, force)?,
+        },
     }
 
     if settings.verbose {
@@ -547,6 +594,172 @@ fn restore_archive(
     result
 }
 
+fn zip_error(error: zip::result::ZipError) -> FileManagerError {
+    FileManagerError::InvalidInput(format!("ZIP archive error: {error}"))
+}
+
+fn extract_zip_limited(
+    archive: &mut zip::ZipArchive<fs::File>,
+    staging: &Path,
+    limits: ArchiveLimits,
+) -> Result<(), FileManagerError> {
+    let entries = u64::try_from(archive.len())
+        .map_err(|_| FileManagerError::InvalidInput("ZIP entry count overflow".into()))?;
+    if entries > limits.entries {
+        return Err(FileManagerError::InvalidInput(format!(
+            "ZIP archive exceeds the {} entry limit",
+            limits.entries
+        )));
+    }
+    if archive.has_overlapping_files().map_err(zip_error)? {
+        return Err(FileManagerError::InvalidInput(
+            "ZIP archive contains overlapping compressed entries".into(),
+        ));
+    }
+    if let Some(total) = archive.decompressed_size()
+        && total > u128::from(limits.total_bytes)
+    {
+        return Err(FileManagerError::InvalidInput(format!(
+            "ZIP archive exceeds the {} byte expanded-size limit",
+            limits.total_bytes
+        )));
+    }
+
+    let mut total_bytes = 0u64;
+    let mut paths = HashSet::new();
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(zip_error)?;
+        if entry.encrypted() {
+            return Err(FileManagerError::InvalidInput(
+                "Encrypted ZIP entries are not supported".into(),
+            ));
+        }
+        match entry.compression() {
+            zip::CompressionMethod::Stored | zip::CompressionMethod::Deflated => {}
+            method => {
+                return Err(FileManagerError::InvalidInput(format!(
+                    "Unsupported ZIP compression method: {method:?}"
+                )));
+            }
+        }
+        if entry.is_symlink() {
+            return Err(FileManagerError::InvalidInput(format!(
+                "ZIP archive entry is a symbolic link: {:?}",
+                entry.name()
+            )));
+        }
+        if !entry.is_dir() && !entry.is_file() {
+            return Err(FileManagerError::InvalidInput(format!(
+                "ZIP archive entry is not a regular file or directory: {:?}",
+                entry.name()
+            )));
+        }
+        if entry.name_raw().len() > limits.path_bytes {
+            return Err(FileManagerError::InvalidInput(format!(
+                "ZIP archive path exceeds the {} byte limit",
+                limits.path_bytes
+            )));
+        }
+        if entry.name().contains('\\') {
+            return Err(FileManagerError::InvalidInput(format!(
+                "ZIP archive path must use forward slashes: {:?}",
+                entry.name()
+            )));
+        }
+
+        let path = entry.enclosed_name().ok_or_else(|| {
+            FileManagerError::InvalidInput(format!(
+                "ZIP archive entry has an unsafe path: {:?}",
+                entry.name()
+            ))
+        })?;
+        validate_archive_path(&path, limits)?;
+        if !paths.insert(path.clone()) {
+            return Err(FileManagerError::InvalidInput(format!(
+                "ZIP archive contains a duplicate entry path: {path:?}"
+            )));
+        }
+
+        let size = entry.size();
+        if size > limits.file_bytes {
+            return Err(FileManagerError::InvalidInput(format!(
+                "ZIP archive entry {path:?} exceeds the {} byte per-file limit",
+                limits.file_bytes
+            )));
+        }
+        total_bytes = total_bytes.checked_add(size).ok_or_else(|| {
+            FileManagerError::InvalidInput("ZIP expanded byte total overflow".into())
+        })?;
+        if total_bytes > limits.total_bytes {
+            return Err(FileManagerError::InvalidInput(format!(
+                "ZIP archive exceeds the {} byte expanded-size limit",
+                limits.total_bytes
+            )));
+        }
+
+        let output = staging.join(&path);
+        if entry.is_dir() {
+            if size != 0 {
+                return Err(FileManagerError::InvalidInput(format!(
+                    "ZIP directory entry has unexpected data: {path:?}"
+                )));
+            }
+            fs::create_dir_all(&output)?;
+            continue;
+        }
+
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut output_file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&output)?;
+        let copied = io::copy(
+            &mut entry.by_ref().take(size.saturating_add(1)),
+            &mut output_file,
+        )?;
+        if copied != size {
+            return Err(FileManagerError::InvalidInput(format!(
+                "ZIP archive entry size does not match its data: {path:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn restore_zip_archive(backup: &Path, target: &Path, force: bool) -> Result<(), FileManagerError> {
+    let parent = target.parent().unwrap_or_else(|| Path::new("."));
+    let staging = parent.join(format!(
+        ".arkive-deploy-{}-{}",
+        std::process::id(),
+        Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    ));
+    fs::create_dir(&staging)?;
+
+    let result = (|| {
+        let file = fs::File::open(backup)?;
+        let mut archive = zip::ZipArchive::new(file).map_err(zip_error)?;
+        extract_zip_limited(&mut archive, &staging, ARCHIVE_LIMITS)?;
+
+        let mut entries = fs::read_dir(&staging)?;
+        let root = entries
+            .next()
+            .transpose()?
+            .ok_or_else(|| FileManagerError::InvalidInput("Archive is empty".into()))?
+            .path();
+        if entries.next().is_some() {
+            return Err(FileManagerError::InvalidInput(
+                "Archive metadata expected exactly one top-level item".into(),
+            ));
+        }
+        publish_staged(&root, target, force)
+    })();
+
+    let _ = fs::remove_dir_all(&staging);
+    result
+}
+
 fn remove_staged(path: &Path) -> Result<(), FileManagerError> {
     let metadata = fs::symlink_metadata(path)?;
     if metadata.is_dir() && !metadata.file_type().is_symlink() {
@@ -560,17 +773,21 @@ fn remove_staged(path: &Path) -> Result<(), FileManagerError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ArchiveLimits, BackupKind, deploy, extract_archive_limited, publish_new, publish_staged,
-        save_manifest, save_manifest_with_ignores,
+        ArchiveLimits, BackupKind, DeploymentManifest, deploy, extract_archive_limited,
+        publish_new, publish_staged, save_compressed_manifest_with_ignores, save_manifest,
+        save_manifest_with_ignores,
     };
     use crate::settings::Settings;
     use crate::test::TestDir;
-    use crate::{file_module::FileManager, file_module::compress::CompressionMethod};
+    use crate::{
+        file_module::FileManager,
+        file_module::compress::{ArchiveFormat, CompressionMethod},
+    };
     use flate2::Compression;
     use flate2::read::GzDecoder;
     use flate2::write::GzEncoder;
     use std::fs;
-    use std::io::Cursor;
+    use std::io::{Cursor, Write};
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
 
@@ -588,6 +805,37 @@ mod tests {
                 .unwrap();
         }
         archive.into_inner().unwrap().finish().unwrap()
+    }
+
+    #[test]
+    fn legacy_manifest_defaults_to_the_tar_archive_format() {
+        let manifest: DeploymentManifest = serde_json::from_str(
+            r#"{
+                "version": 1,
+                "kind": "compress",
+                "original_path": "/tmp/original",
+                "backup_path": "/tmp/backup.tar.gz",
+                "compression_method": "gzip",
+                "ignore_rules": [],
+                "partial_move": false,
+                "created_at": 0
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(manifest.archive_format, ArchiveFormat::Tar);
+    }
+
+    fn zip_archive(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let cursor = Cursor::new(Vec::new());
+        let mut archive = zip::ZipWriter::new(cursor);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for (path, data) in entries {
+            archive.start_file(*path, options).unwrap();
+            archive.write_all(data).unwrap();
+        }
+        archive.finish().unwrap().into_inner()
     }
 
     #[test]
@@ -918,5 +1166,38 @@ mod tests {
 
         deploy(&backup, Some(&target), false, false, &Settings::default()).unwrap();
         assert_eq!(fs::read(target).unwrap(), b"save portably");
+    }
+
+    #[test]
+    fn zip_backup_deploys_through_the_bounded_extractor() {
+        let temp = TestDir::new("deploy-zip-archive");
+        let original = temp.path().join("original.dat");
+        let backup = temp.path().join("backup.zip");
+        let target = temp.path().join("target.dat");
+        fs::write(&original, b"save portably everywhere").unwrap();
+
+        FileManager::new(&original, &backup, &Settings::default())
+            .compress_zip_path(false)
+            .unwrap();
+        save_compressed_manifest_with_ignores(&original, &backup, None, ArchiveFormat::Zip, &[])
+            .unwrap();
+
+        deploy(&backup, Some(&target), false, false, &Settings::default()).unwrap();
+        assert_eq!(fs::read(target).unwrap(), b"save portably everywhere");
+    }
+
+    #[test]
+    fn zip_deployment_rejects_unsafe_entry_paths() {
+        let temp = TestDir::new("deploy-zip-unsafe-path");
+        let original = temp.path().join("original.dat");
+        let backup = temp.path().join("backup.zip");
+        let target = temp.path().join("target.dat");
+        fs::write(&backup, zip_archive(&[("../escaped.dat", b"not allowed")])).unwrap();
+        save_compressed_manifest_with_ignores(&original, &backup, None, ArchiveFormat::Zip, &[])
+            .unwrap();
+
+        assert!(deploy(&backup, Some(&target), false, false, &Settings::default()).is_err());
+        assert!(!target.exists());
+        assert!(!temp.path().join("escaped.dat").exists());
     }
 }
