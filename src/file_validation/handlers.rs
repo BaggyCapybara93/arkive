@@ -200,6 +200,7 @@ pub fn validate_compress_path(
     let valid_extensions: &[&str] = match method {
         CompressionMethod::Gzip => &[".tar.gz", ".tgz"],
         CompressionMethod::Zstd => &[".tar.zst", ".tzst"],
+        CompressionMethod::Lz4 => &[".tar.lz4"],
     };
     let dst_str = dst.to_str().ok_or(FileManagerError::InvalidInput(
         "Destination path is not valid UTF‑8".into(),
@@ -234,12 +235,18 @@ mod tests {
             validate_compress_path(Path::new("backup.tar.zst"), CompressionMethod::Zstd).is_ok()
         );
         assert!(validate_compress_path(Path::new("backup.tzst"), CompressionMethod::Zstd).is_ok());
+        assert!(
+            validate_compress_path(Path::new("backup.tar.lz4"), CompressionMethod::Lz4).is_ok()
+        );
 
         assert!(
             validate_compress_path(Path::new("backup.tar.zst"), CompressionMethod::Gzip).is_err()
         );
         assert!(
             validate_compress_path(Path::new("backup.tar.gz"), CompressionMethod::Zstd).is_err()
+        );
+        assert!(
+            validate_compress_path(Path::new("backup.tar.zst"), CompressionMethod::Lz4).is_err()
         );
     }
 

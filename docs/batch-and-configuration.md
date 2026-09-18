@@ -28,8 +28,8 @@ array. Supported `work_type` values are `move`, `copy`, `compress`, and
     {
       "work_type": "compress",
       "source": "data/",
-      "destination": "backup/data.tar.zst",
-      "compression_method": "zstd"
+      "destination": "backup/data.tar.lz4",
+      "compression_method": "lz4"
     }
   ]
 }

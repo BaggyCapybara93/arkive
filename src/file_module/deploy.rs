@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use flate2::read::GzDecoder;
+use lz4_flex::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
 
 use crate::file_module::compress::CompressionMethod;
@@ -499,6 +500,9 @@ fn restore_archive(
                 let decoder = zstd::Decoder::new(file)?;
                 extract_archive_limited(decoder, &staging, ARCHIVE_LIMITS)?;
             }
+            CompressionMethod::Lz4 => {
+                extract_archive_limited(FrameDecoder::new(file), &staging, ARCHIVE_LIMITS)?;
+            }
         }
 
         let mut entries = fs::read_dir(&staging)?;
@@ -540,6 +544,7 @@ mod tests {
     };
     use crate::settings::Settings;
     use crate::test::TestDir;
+    use crate::{file_module::FileManager, file_module::compress::CompressionMethod};
     use flate2::Compression;
     use flate2::read::GzDecoder;
     use flate2::write::GzEncoder;
@@ -823,5 +828,28 @@ mod tests {
 
         deploy(&backup, Some(&target), false, false, &Settings::default()).unwrap();
         assert_eq!(fs::read(target).unwrap(), b"save");
+    }
+
+    #[test]
+    fn lz4_backup_deploys_through_the_bounded_extractor() {
+        let temp = TestDir::new("deploy-lz4-archive");
+        let original = temp.path().join("original.dat");
+        let backup = temp.path().join("backup.tar.lz4");
+        let target = temp.path().join("target.dat");
+        fs::write(&original, b"save quickly").unwrap();
+
+        FileManager::new(&original, &backup, &Settings::default())
+            .compress_path(CompressionMethod::Lz4, false)
+            .unwrap();
+        save_manifest(
+            &original,
+            &backup,
+            BackupKind::Compress,
+            Some(CompressionMethod::Lz4),
+        )
+        .unwrap();
+
+        deploy(&backup, Some(&target), false, false, &Settings::default()).unwrap();
+        assert_eq!(fs::read(target).unwrap(), b"save quickly");
     }
 }

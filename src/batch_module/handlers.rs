@@ -15,6 +15,7 @@ impl From<BatchCompressionMethod> for crate::file_module::compress::CompressionM
         match batch_method {
             BatchCompressionMethod::Gzip => crate::file_module::compress::CompressionMethod::Gzip,
             BatchCompressionMethod::Zstd => crate::file_module::compress::CompressionMethod::Zstd,
+            BatchCompressionMethod::Lz4 => crate::file_module::compress::CompressionMethod::Lz4,
         }
     }
 }

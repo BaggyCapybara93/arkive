@@ -19,6 +19,7 @@ use super::manager::FileManager;
 pub enum CompressionMethod {
     Gzip,
     Zstd,
+    Lz4,
 }
 
 impl FromStr for CompressionMethod {
@@ -28,8 +29,9 @@ impl FromStr for CompressionMethod {
         match s.to_lowercase().as_str() {
             "gzip" | "gz" => Ok(CompressionMethod::Gzip),
             "zstd" | "zst" => Ok(CompressionMethod::Zstd),
+            "lz4" => Ok(CompressionMethod::Lz4),
             _ => Err(format!(
-                "Invalid compression method: {}. Use 'gzip' or 'zstd'.",
+                "Invalid compression method: {}. Use 'gzip', 'zstd', or 'lz4'.",
                 s
             )),
         }
@@ -51,11 +53,15 @@ fn create_encoder(
             let encoder = zstd::Encoder::new(file, 3).map_err(FileManagerError::Io)?;
             Ok(Box::new(encoder.auto_finish()))
         }
+
+        CompressionMethod::Lz4 => Ok(Box::new(
+            lz4_flex::frame::FrameEncoder::new(file).auto_finish(),
+        )),
     }
 }
 
 impl<'a> FileManager<'a> {
-    /// Compress a file or directory into a gzip- or Zstandard-compressed tar archive.
+    /// Compress a file or directory into a gzip-, Zstandard-, or LZ4-compressed tar archive.
     pub fn compress_path(
         &self,
         method: CompressionMethod,
@@ -177,6 +183,7 @@ mod tests {
     use crate::settings::Settings;
     use crate::test::TestDir;
     use flate2::read::GzDecoder;
+    use lz4_flex::frame::FrameDecoder;
     use std::fs::File;
 
     #[test]
@@ -214,6 +221,29 @@ mod tests {
         let mut contents = Vec::new();
         std::io::Read::read_to_end(&mut entry, &mut contents).unwrap();
         assert_eq!(contents, b"archive me");
+        assert!(entries.next().is_none());
+    }
+
+    #[test]
+    fn lz4_compression_installs_a_valid_archive() {
+        let temp = TestDir::new("compress-lz4-success");
+        let source = temp.path().join("source.txt");
+        let destination = temp.path().join("backup.tar.lz4");
+        std::fs::write(&source, b"archive me quickly").unwrap();
+
+        let settings = Settings::default();
+        FileManager::new(&source, &destination, &settings)
+            .compress_path(CompressionMethod::Lz4, false)
+            .unwrap();
+
+        let file = File::open(destination).unwrap();
+        let mut archive = tar::Archive::new(FrameDecoder::new(file));
+        let mut entries = archive.entries().unwrap();
+        let mut entry = entries.next().unwrap().unwrap();
+        assert_eq!(entry.path().unwrap(), std::path::Path::new("source.txt"));
+        let mut contents = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut contents).unwrap();
+        assert_eq!(contents, b"archive me quickly");
         assert!(entries.next().is_none());
     }
 

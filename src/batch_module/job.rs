@@ -19,6 +19,7 @@ pub enum WorkType {
 pub enum BatchCompressionMethod {
     Gzip,
     Zstd,
+    Lz4,
 }
 
 #[derive(Debug, Deserialize, Clone)]
