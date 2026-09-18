@@ -111,7 +111,7 @@ pub enum Command {
         ignore: IgnoreArgs,
     },
 
-    /// Compress a file or directory into a gzip-, Zstandard-, LZ4-, or XZ-compressed tar archive
+    /// Compress a file or directory into a gzip-, Zstandard-, LZ4-, XZ-, or bzip2-compressed tar archive
     Compress {
         /// Source path
         src: PathBuf,
@@ -119,7 +119,7 @@ pub enum Command {
         /// Destination path
         dest: PathBuf,
 
-        #[arg(long, help = "Compression method (gzip, zstd, lz4, or xz)", value_parser = value_parser!(CompressionMethod))]
+        #[arg(long, help = "Compression method (gzip, zstd, lz4, xz, or bzip2)", value_parser = value_parser!(CompressionMethod))]
         method: Option<CompressionMethod>,
 
         /// Save portable metadata so this archive can be deployed later

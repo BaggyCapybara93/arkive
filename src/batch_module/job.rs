@@ -21,6 +21,7 @@ pub enum BatchCompressionMethod {
     Zstd,
     Lz4,
     Xz,
+    Bzip2,
 }
 
 #[derive(Debug, Deserialize, Clone)]

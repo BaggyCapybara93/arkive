@@ -21,6 +21,7 @@ pub enum CompressionMethod {
     Zstd,
     Lz4,
     Xz,
+    Bzip2,
 }
 
 impl FromStr for CompressionMethod {
@@ -32,8 +33,9 @@ impl FromStr for CompressionMethod {
             "zstd" | "zst" => Ok(CompressionMethod::Zstd),
             "lz4" => Ok(CompressionMethod::Lz4),
             "xz" => Ok(CompressionMethod::Xz),
+            "bzip2" | "bz2" => Ok(CompressionMethod::Bzip2),
             _ => Err(format!(
-                "Invalid compression method: {}. Use 'gzip', 'zstd', 'lz4', or 'xz'.",
+                "Invalid compression method: {}. Use 'gzip', 'zstd', 'lz4', 'xz', or 'bzip2'.",
                 s
             )),
         }
@@ -61,11 +63,16 @@ fn create_encoder(
         )),
 
         CompressionMethod::Xz => Ok(Box::new(xz2::write::XzEncoder::new(file, 6))),
+
+        CompressionMethod::Bzip2 => Ok(Box::new(bzip2::write::BzEncoder::new(
+            file,
+            bzip2::Compression::default(),
+        ))),
     }
 }
 
 impl<'a> FileManager<'a> {
-    /// Compress a file or directory into a gzip-, Zstandard-, LZ4-, or XZ-compressed tar archive.
+    /// Compress a file or directory into a gzip-, Zstandard-, LZ4-, XZ-, or bzip2-compressed tar archive.
     pub fn compress_path(
         &self,
         method: CompressionMethod,
@@ -186,10 +193,23 @@ mod tests {
     use super::{CompressionMethod, FileManager};
     use crate::settings::Settings;
     use crate::test::TestDir;
+    use bzip2::read::BzDecoder;
     use flate2::read::GzDecoder;
     use lz4_flex::frame::FrameDecoder;
     use std::fs::File;
     use xz2::read::XzDecoder;
+
+    #[test]
+    fn bzip2_aliases_parse_to_bzip2() {
+        assert_eq!(
+            "bzip2".parse::<CompressionMethod>().unwrap(),
+            CompressionMethod::Bzip2
+        );
+        assert_eq!(
+            "bz2".parse::<CompressionMethod>().unwrap(),
+            CompressionMethod::Bzip2
+        );
+    }
 
     #[test]
     fn failed_compression_preserves_existing_archive() {
@@ -272,6 +292,29 @@ mod tests {
         let mut contents = Vec::new();
         std::io::Read::read_to_end(&mut entry, &mut contents).unwrap();
         assert_eq!(contents, b"archive me compactly");
+        assert!(entries.next().is_none());
+    }
+
+    #[test]
+    fn bzip2_compression_installs_a_valid_archive() {
+        let temp = TestDir::new("compress-bzip2-success");
+        let source = temp.path().join("source.txt");
+        let destination = temp.path().join("backup.tar.bz2");
+        std::fs::write(&source, b"archive me compatibly").unwrap();
+
+        let settings = Settings::default();
+        FileManager::new(&source, &destination, &settings)
+            .compress_path(CompressionMethod::Bzip2, false)
+            .unwrap();
+
+        let file = File::open(destination).unwrap();
+        let mut archive = tar::Archive::new(BzDecoder::new(file));
+        let mut entries = archive.entries().unwrap();
+        let mut entry = entries.next().unwrap().unwrap();
+        assert_eq!(entry.path().unwrap(), std::path::Path::new("source.txt"));
+        let mut contents = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut contents).unwrap();
+        assert_eq!(contents, b"archive me compatibly");
         assert!(entries.next().is_none());
     }
 

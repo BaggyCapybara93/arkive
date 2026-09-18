@@ -17,6 +17,7 @@ impl From<BatchCompressionMethod> for crate::file_module::compress::CompressionM
             BatchCompressionMethod::Zstd => crate::file_module::compress::CompressionMethod::Zstd,
             BatchCompressionMethod::Lz4 => crate::file_module::compress::CompressionMethod::Lz4,
             BatchCompressionMethod::Xz => crate::file_module::compress::CompressionMethod::Xz,
+            BatchCompressionMethod::Bzip2 => crate::file_module::compress::CompressionMethod::Bzip2,
         }
     }
 }

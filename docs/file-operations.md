@@ -41,18 +41,21 @@ arkive copy --recursive myproject/ backup/myproject/ --metadata
 arkive compress [--method <METHOD>] <SRC> <DEST>
 ```
 
-Create a tar archive compressed with gzip, Zstandard, LZ4, or XZ. Accepted
-methods are `gzip`/`gz`, `zstd`/`zst`, `lz4`, and `xz`. The destination
+Create a tar archive compressed with gzip, Zstandard, LZ4, XZ, or bzip2. Accepted
+methods are `gzip`/`gz`, `zstd`/`zst`, `lz4`, `xz`, and `bzip2`/`bz2`. The destination
 extension must match the selected method: `.tar.gz`/`.tgz` for gzip,
-`.tar.zst`/`.tzst` for Zstandard, `.tar.lz4` for LZ4, or `.tar.xz` for XZ.
+`.tar.zst`/`.tzst` for Zstandard, `.tar.lz4` for LZ4, `.tar.xz` for XZ, or
+`.tar.bz2`/`.tbz`/`.tbz2` for bzip2.
 LZ4 favors quick archive creation and restoration; XZ favors smaller archives
-at the cost of more CPU time.
+at the cost of more CPU time. bzip2 is a widely supported compatibility format,
+but is generally slower than LZ4 or Zstandard.
 
 ```bash
 arkive compress data/ backup/data.tar.gz
 arkive compress --method zstd data/ backup/data.tar.zst
 arkive compress --method lz4 data/ backup/data.tar.lz4
 arkive compress --method xz data/ backup/data.tar.xz
+arkive compress --method bzip2 data/ backup/data.tar.bz2
 arkive compress data/ backup/data.tar.zst --metadata
 ```
 

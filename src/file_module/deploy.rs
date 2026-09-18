@@ -2,6 +2,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
+use bzip2::read::BzDecoder;
 use chrono::{DateTime, Utc};
 use flate2::read::GzDecoder;
 use lz4_flex::frame::FrameDecoder;
@@ -520,6 +521,9 @@ fn restore_archive(
                     ARCHIVE_LIMITS,
                 )?;
             }
+            CompressionMethod::Bzip2 => {
+                extract_archive_limited(BzDecoder::new(file), &staging, ARCHIVE_LIMITS)?;
+            }
         }
 
         let mut entries = fs::read_dir(&staging)?;
@@ -891,5 +895,28 @@ mod tests {
 
         deploy(&backup, Some(&target), false, false, &Settings::default()).unwrap();
         assert_eq!(fs::read(target).unwrap(), b"save compactly");
+    }
+
+    #[test]
+    fn bzip2_backup_deploys_through_the_bounded_extractor() {
+        let temp = TestDir::new("deploy-bzip2-archive");
+        let original = temp.path().join("original.dat");
+        let backup = temp.path().join("backup.tar.bz2");
+        let target = temp.path().join("target.dat");
+        fs::write(&original, b"save portably").unwrap();
+
+        FileManager::new(&original, &backup, &Settings::default())
+            .compress_path(CompressionMethod::Bzip2, false)
+            .unwrap();
+        save_manifest(
+            &original,
+            &backup,
+            BackupKind::Compress,
+            Some(CompressionMethod::Bzip2),
+        )
+        .unwrap();
+
+        deploy(&backup, Some(&target), false, false, &Settings::default()).unwrap();
+        assert_eq!(fs::read(target).unwrap(), b"save portably");
     }
 }
