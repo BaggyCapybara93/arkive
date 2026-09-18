@@ -20,6 +20,7 @@ pub enum CompressionMethod {
     Gzip,
     Zstd,
     Lz4,
+    Xz,
 }
 
 impl FromStr for CompressionMethod {
@@ -30,8 +31,9 @@ impl FromStr for CompressionMethod {
             "gzip" | "gz" => Ok(CompressionMethod::Gzip),
             "zstd" | "zst" => Ok(CompressionMethod::Zstd),
             "lz4" => Ok(CompressionMethod::Lz4),
+            "xz" => Ok(CompressionMethod::Xz),
             _ => Err(format!(
-                "Invalid compression method: {}. Use 'gzip', 'zstd', or 'lz4'.",
+                "Invalid compression method: {}. Use 'gzip', 'zstd', 'lz4', or 'xz'.",
                 s
             )),
         }
@@ -57,11 +59,13 @@ fn create_encoder(
         CompressionMethod::Lz4 => Ok(Box::new(
             lz4_flex::frame::FrameEncoder::new(file).auto_finish(),
         )),
+
+        CompressionMethod::Xz => Ok(Box::new(xz2::write::XzEncoder::new(file, 6))),
     }
 }
 
 impl<'a> FileManager<'a> {
-    /// Compress a file or directory into a gzip-, Zstandard-, or LZ4-compressed tar archive.
+    /// Compress a file or directory into a gzip-, Zstandard-, LZ4-, or XZ-compressed tar archive.
     pub fn compress_path(
         &self,
         method: CompressionMethod,
@@ -185,6 +189,7 @@ mod tests {
     use flate2::read::GzDecoder;
     use lz4_flex::frame::FrameDecoder;
     use std::fs::File;
+    use xz2::read::XzDecoder;
 
     #[test]
     fn failed_compression_preserves_existing_archive() {
@@ -244,6 +249,29 @@ mod tests {
         let mut contents = Vec::new();
         std::io::Read::read_to_end(&mut entry, &mut contents).unwrap();
         assert_eq!(contents, b"archive me quickly");
+        assert!(entries.next().is_none());
+    }
+
+    #[test]
+    fn xz_compression_installs_a_valid_archive() {
+        let temp = TestDir::new("compress-xz-success");
+        let source = temp.path().join("source.txt");
+        let destination = temp.path().join("backup.tar.xz");
+        std::fs::write(&source, b"archive me compactly").unwrap();
+
+        let settings = Settings::default();
+        FileManager::new(&source, &destination, &settings)
+            .compress_path(CompressionMethod::Xz, false)
+            .unwrap();
+
+        let file = File::open(destination).unwrap();
+        let mut archive = tar::Archive::new(XzDecoder::new(file));
+        let mut entries = archive.entries().unwrap();
+        let mut entry = entries.next().unwrap().unwrap();
+        assert_eq!(entry.path().unwrap(), std::path::Path::new("source.txt"));
+        let mut contents = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut contents).unwrap();
+        assert_eq!(contents, b"archive me compactly");
         assert!(entries.next().is_none());
     }
 

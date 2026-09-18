@@ -6,6 +6,8 @@ use chrono::{DateTime, Utc};
 use flate2::read::GzDecoder;
 use lz4_flex::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
+use xz2::read::XzDecoder;
+use xz2::stream::Stream as XzStream;
 
 use crate::file_module::compress::CompressionMethod;
 use crate::file_module::copy::copy_dir_recursive;
@@ -18,6 +20,7 @@ const MAX_ARCHIVE_FILE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_ARCHIVE_TOTAL_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 const MAX_ARCHIVE_PATH_BYTES: usize = 4 * 1024;
 const MAX_ARCHIVE_PATH_DEPTH: usize = 128;
+const MAX_XZ_DECODER_MEMORY_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(Clone, Copy)]
 struct ArchiveLimits {
@@ -503,6 +506,20 @@ fn restore_archive(
             CompressionMethod::Lz4 => {
                 extract_archive_limited(FrameDecoder::new(file), &staging, ARCHIVE_LIMITS)?;
             }
+            CompressionMethod::Xz => {
+                let stream = XzStream::new_stream_decoder(MAX_XZ_DECODER_MEMORY_BYTES, 0).map_err(
+                    |error| {
+                        FileManagerError::InvalidInput(format!(
+                            "Could not initialize memory-limited XZ decoder: {error}"
+                        ))
+                    },
+                )?;
+                extract_archive_limited(
+                    XzDecoder::new_stream(file, stream),
+                    &staging,
+                    ARCHIVE_LIMITS,
+                )?;
+            }
         }
 
         let mut entries = fs::read_dir(&staging)?;
@@ -851,5 +868,28 @@ mod tests {
 
         deploy(&backup, Some(&target), false, false, &Settings::default()).unwrap();
         assert_eq!(fs::read(target).unwrap(), b"save quickly");
+    }
+
+    #[test]
+    fn xz_backup_deploys_through_the_bounded_extractor() {
+        let temp = TestDir::new("deploy-xz-archive");
+        let original = temp.path().join("original.dat");
+        let backup = temp.path().join("backup.tar.xz");
+        let target = temp.path().join("target.dat");
+        fs::write(&original, b"save compactly").unwrap();
+
+        FileManager::new(&original, &backup, &Settings::default())
+            .compress_path(CompressionMethod::Xz, false)
+            .unwrap();
+        save_manifest(
+            &original,
+            &backup,
+            BackupKind::Compress,
+            Some(CompressionMethod::Xz),
+        )
+        .unwrap();
+
+        deploy(&backup, Some(&target), false, false, &Settings::default()).unwrap();
+        assert_eq!(fs::read(target).unwrap(), b"save compactly");
     }
 }

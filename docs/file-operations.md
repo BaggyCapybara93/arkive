@@ -41,16 +41,18 @@ arkive copy --recursive myproject/ backup/myproject/ --metadata
 arkive compress [--method <METHOD>] <SRC> <DEST>
 ```
 
-Create a tar archive compressed with gzip, Zstandard, or LZ4. Accepted methods
-are `gzip`/`gz`, `zstd`/`zst`, and `lz4`. The destination extension must match
-the selected method: `.tar.gz`/`.tgz` for gzip, `.tar.zst`/`.tzst` for
-Zstandard, or `.tar.lz4` for LZ4. LZ4 favors quick archive creation and
-restoration over a smaller archive.
+Create a tar archive compressed with gzip, Zstandard, LZ4, or XZ. Accepted
+methods are `gzip`/`gz`, `zstd`/`zst`, `lz4`, and `xz`. The destination
+extension must match the selected method: `.tar.gz`/`.tgz` for gzip,
+`.tar.zst`/`.tzst` for Zstandard, `.tar.lz4` for LZ4, or `.tar.xz` for XZ.
+LZ4 favors quick archive creation and restoration; XZ favors smaller archives
+at the cost of more CPU time.
 
 ```bash
 arkive compress data/ backup/data.tar.gz
 arkive compress --method zstd data/ backup/data.tar.zst
 arkive compress --method lz4 data/ backup/data.tar.lz4
+arkive compress --method xz data/ backup/data.tar.xz
 arkive compress data/ backup/data.tar.zst --metadata
 ```
 
@@ -81,3 +83,4 @@ recorded compression metadata. To contain decompression bombs and malformed
 archives, compressed deployment accepts at most 100,000 entries, 8 GiB per
 file, 16 GiB total expanded data, 4 KiB paths, and 128 path components. An
 archive exceeding a limit is rejected before it is published to the destination.
+XZ deployment additionally caps decoder memory at 256 MiB.
