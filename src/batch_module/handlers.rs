@@ -59,6 +59,12 @@ impl BatchHandler {
     }
 
     pub fn run(&self) -> Result<(), BatchError> {
+        for (index, job) in self.commands.iter().enumerate() {
+            job.validate().map_err(|error| {
+                BatchError::Worker(format!("Invalid batch job {}: {error}", index + 1))
+            })?;
+        }
+
         let threads = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4);

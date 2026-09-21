@@ -44,8 +44,29 @@ array. Supported `work_type` values are `move`, `copy`, `compress`, and
 Operations may use `source`, `destination`, `recursive`, `timestamp`,
 `compression_method`, `archive_format`, and `cleanup`. `archive_format` is
 `tar` by default; use `zip` for a Deflate-compressed ZIP archive.
-`compression_method` applies only to tar jobs. Batch jobs may run in parallel,
-so avoid operations that modify overlapping paths.
+`compression_method` applies only to tar jobs.
+
+`cleanup` is an optional object that runs only the named cleanup actions after
+its job succeeds. A bare `true` is intentionally not accepted: emptying the
+trash, deduplicating, and removing empty directories must be explicit. `path`
+is required for `deduplicate`, `scan_unused`, and `scan_empty_dirs`; it is not
+needed for `empty_trash` alone.
+
+```json
+{
+  "work_type": "copy",
+  "source": "screenshots/",
+  "destination": "backup/screenshots/",
+  "recursive": true,
+  "cleanup": {
+    "path": "backup/screenshots/",
+    "scan_empty_dirs": true
+  }
+}
+```
+
+Batch jobs may run in parallel, so avoid operations that modify overlapping
+paths.
 
 ```bash
 arkive batch batch.json
