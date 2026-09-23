@@ -18,9 +18,11 @@ use clap::Parser;
 
 fn main() -> Result<(), AppError> {
     let cli = crate::cli::Cli::parse();
+    let dry_run_requested = cli.dry_run;
 
     let config_manager = ConfigManager::new()?;
-    if !cli.dry_run {
+    let is_config_command = matches!(cli.command, crate::cli::Command::Config { .. });
+    if !cli.dry_run && !is_config_command {
         config_manager.create_default_config()?;
     }
 
@@ -40,6 +42,6 @@ fn main() -> Result<(), AppError> {
         use_timestamp: config.use_timestamp,
     };
 
-    cli_handler(cli.command, &settings)?;
+    cli_handler(cli.command, &settings, &config_manager, dry_run_requested)?;
     Ok(())
 }

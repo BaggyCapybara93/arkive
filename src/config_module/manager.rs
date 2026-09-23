@@ -25,6 +25,16 @@ impl ConfigManager {
         Ok(ConfigManager { config_path })
     }
 
+    /// Return the location used for Arkive's runtime configuration.
+    pub fn path(&self) -> &std::path::Path {
+        &self.config_path
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_path(config_path: PathBuf) -> Self {
+        Self { config_path }
+    }
+
     /// Load configuration from file
     pub fn load(&self) -> Result<Config, ConfigError> {
         if self.config_path.exists() {

@@ -7,7 +7,7 @@ use crate::file_module::deploy::{self, BackupKind};
 use crate::file_module::ignore::{IgnoreMatcher, IgnoreOptions};
 use crate::file_module::remove;
 use crate::settings::Settings;
-use clap::{Args, Parser, Subcommand, value_parser};
+use clap::{Args, Parser, Subcommand, ValueEnum, value_parser};
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -68,6 +68,12 @@ impl From<&IgnoreArgs> for IgnoreOptions {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// View or update Arkive's persistent configuration
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
+
     /// Manage a filesystem vault, including an OS-mounted SMB/NFS share
     Vault {
         #[command(subcommand)]
@@ -234,6 +240,29 @@ pub enum Command {
         #[arg(long, help = "Move files to arkive trash")]
         trash: bool,
     },
+}
+
+#[derive(Subcommand)]
+pub enum ConfigCommand {
+    /// Print the configuration file location without creating it
+    Path,
+    /// Print the complete configuration as JSON
+    Show,
+    /// Print one configuration value
+    Get { key: ConfigKey },
+    /// Set one configuration value
+    Set { key: ConfigKey, value: String },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum ConfigKey {
+    EnableTrash,
+    Verbose,
+    DryRun,
+    Recursive,
+    EnableMetadata,
+    CompressionMethod,
+    UseTimestamp,
 }
 
 #[derive(Subcommand)]
@@ -629,8 +658,100 @@ fn handle_list_trash(settings: &Settings) -> Result<(), AppError> {
     Ok(())
 }
 
-pub fn cli_handler(cmd: Command, settings: &Settings) -> Result<(), AppError> {
+fn config_value(config: &crate::config_module::Config, key: ConfigKey) -> String {
+    match key {
+        ConfigKey::EnableTrash => config.enable_trash.to_string(),
+        ConfigKey::Verbose => config.verbose.to_string(),
+        ConfigKey::DryRun => config.dry_run.to_string(),
+        ConfigKey::Recursive => config.recursive.to_string(),
+        ConfigKey::EnableMetadata => config.enable_metadata.to_string(),
+        ConfigKey::CompressionMethod => match config.compression_method {
+            CompressionMethod::Gzip => "gzip".into(),
+            CompressionMethod::Zstd => "zstd".into(),
+            CompressionMethod::Lz4 => "lz4".into(),
+            CompressionMethod::Xz => "xz".into(),
+            CompressionMethod::Bzip2 => "bzip2".into(),
+        },
+        ConfigKey::UseTimestamp => config.use_timestamp.to_string(),
+    }
+}
+
+fn set_config_value(
+    config: &mut crate::config_module::Config,
+    key: ConfigKey,
+    value: &str,
+) -> Result<(), AppError> {
+    let bool_value = || {
+        value.parse::<bool>().map_err(|_| {
+            AppError::InvalidInput(format!(
+                "{key:?} must be either true or false; received {value:?}"
+            ))
+        })
+    };
+
+    match key {
+        ConfigKey::EnableTrash => config.enable_trash = bool_value()?,
+        ConfigKey::Verbose => config.verbose = bool_value()?,
+        ConfigKey::DryRun => config.dry_run = bool_value()?,
+        ConfigKey::Recursive => config.recursive = bool_value()?,
+        ConfigKey::EnableMetadata => config.enable_metadata = bool_value()?,
+        ConfigKey::UseTimestamp => config.use_timestamp = bool_value()?,
+        ConfigKey::CompressionMethod => {
+            config.compression_method = value.parse().map_err(|_| {
+                AppError::InvalidInput(format!(
+                    "compression-method must be one of gzip, zstd, lz4, xz, or bzip2; received {value:?}"
+                ))
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn handle_config(
+    command: ConfigCommand,
+    config_manager: &crate::config_module::ConfigManager,
+    dry_run_requested: bool,
+) -> Result<(), AppError> {
+    match command {
+        ConfigCommand::Path => println!("{}", config_manager.path().display()),
+        ConfigCommand::Show => {
+            let config = config_manager.load()?;
+            let rendered = serde_json::to_string_pretty(&config).map_err(|error| {
+                AppError::InvalidInput(format!("could not render configuration as JSON: {error}"))
+            })?;
+            println!("{rendered}")
+        }
+        ConfigCommand::Get { key } => println!("{}", config_value(&config_manager.load()?, key)),
+        ConfigCommand::Set { key, value } => {
+            let mut config = config_manager.load()?;
+            set_config_value(&mut config, key, &value)?;
+            if dry_run_requested {
+                println!(
+                    "[DRY-RUN] Would update {}: {}",
+                    key.to_possible_value().unwrap().get_name(),
+                    config_value(&config, key)
+                );
+                return Ok(());
+            }
+            config_manager.save(&config)?;
+            println!(
+                "Updated {}: {}",
+                key.to_possible_value().unwrap().get_name(),
+                config_value(&config, key)
+            );
+        }
+    }
+    Ok(())
+}
+
+pub fn cli_handler(
+    cmd: Command,
+    settings: &Settings,
+    config_manager: &crate::config_module::ConfigManager,
+    dry_run_requested: bool,
+) -> Result<(), AppError> {
     match cmd {
+        Command::Config { command } => handle_config(command, config_manager, dry_run_requested),
         Command::Vault { command } => match command {
             VaultCommand::Init { path } => crate::vault::init(&path, settings.dry_run),
             VaultCommand::Check { path } => crate::vault::check(&path, settings.dry_run),
@@ -792,5 +913,70 @@ pub fn cli_handler(cmd: Command, settings: &Settings) -> Result<(), AppError> {
             extension,
             trash,
         } => handle_remove(&path, &pattern, extension.as_deref(), trash, settings),
+    }
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    #[test]
+    fn config_setter_accepts_documented_values_and_reports_them_canonically() {
+        let mut config = crate::config_module::Config::default();
+
+        set_config_value(&mut config, ConfigKey::EnableTrash, "false").unwrap();
+        set_config_value(&mut config, ConfigKey::CompressionMethod, "zst").unwrap();
+
+        assert_eq!(config_value(&config, ConfigKey::EnableTrash), "false");
+        assert_eq!(config_value(&config, ConfigKey::CompressionMethod), "zstd");
+    }
+
+    #[test]
+    fn config_setter_rejects_invalid_values() {
+        let mut config = crate::config_module::Config::default();
+
+        assert!(set_config_value(&mut config, ConfigKey::Verbose, "yes").is_err());
+        assert!(set_config_value(&mut config, ConfigKey::CompressionMethod, "brotli").is_err());
+    }
+
+    #[test]
+    fn dry_run_config_set_does_not_create_a_configuration_file() {
+        let temp = crate::test::TestDir::new("config-dry-run");
+        let manager =
+            crate::config_module::ConfigManager::from_path(temp.path().join("config.json"));
+
+        handle_config(
+            ConfigCommand::Set {
+                key: ConfigKey::EnableTrash,
+                value: "false".into(),
+            },
+            &manager,
+            true,
+        )
+        .unwrap();
+
+        assert!(!manager.path().exists());
+    }
+
+    #[test]
+    fn config_set_writes_a_validated_value() {
+        let temp = crate::test::TestDir::new("config-set");
+        let manager =
+            crate::config_module::ConfigManager::from_path(temp.path().join("config.json"));
+
+        handle_config(
+            ConfigCommand::Set {
+                key: ConfigKey::CompressionMethod,
+                value: "zstd".into(),
+            },
+            &manager,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            manager.load().unwrap().compression_method,
+            CompressionMethod::Zstd
+        );
     }
 }

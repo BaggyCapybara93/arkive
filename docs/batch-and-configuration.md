@@ -74,8 +74,24 @@ arkive batch batch.json
 
 ## Configuration
 
-On first run, Arkive creates `config.json` beside the executable. The current
-configuration includes settings such as:
+On first non-configuration command, Arkive creates `config.json` beside the
+executable. Inspect and update it through the CLI:
+
+```bash
+arkive config path
+arkive config show
+arkive config get compression-method
+arkive config set compression-method zstd
+arkive config set enable-trash false
+arkive --dry-run config set enable-trash false
+```
+
+Boolean values must be `true` or `false`. The supported keys are
+`enable-trash`, `verbose`, `dry-run`, `recursive`, `enable-metadata`,
+`compression-method`, and `use-timestamp`.
+`--dry-run` previews a `config set` change without writing it.
+
+The configuration includes settings such as:
 
 ```json
 {
@@ -92,6 +108,5 @@ configuration includes settings such as:
 ```
 
 The timestamp fields are Unix timestamps and are managed automatically. Global
-CLI flags can override selected behavior for one run. There is currently no
-CLI command for editing the configuration, and portable backup metadata is
-separate from this runtime configuration.
+CLI flags can override selected behavior for one run. Portable backup metadata
+is separate from this runtime configuration.
