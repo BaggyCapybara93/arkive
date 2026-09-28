@@ -2,12 +2,14 @@
 #[cfg(test)]
 mod tests;
 
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::Read;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use super::{
     CONTROL, VaultLock, combine, ensure_unlocked, exists, invalid, io_at, require_directory, root,
@@ -19,6 +21,145 @@ const FORMAT: &str = "arkive-profile";
 const VERSION: u32 = 1;
 const MAX_PROFILE_BYTES: usize = 64 * 1024;
 const MAX_NAME_BYTES: usize = 128;
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocalBinding {
+    vault: PathBuf,
+    source: PathBuf,
+}
+
+// Profiles live on the shared vault, but approval of a host path must live on
+// the host. A vault writer must not be able to choose another user's source.
+fn binding_path(root: &Path, name: &str) -> Result<PathBuf, AppError> {
+    profile_name(name)?;
+    #[cfg(test)]
+    let home = root.parent().unwrap().join("test-home");
+    #[cfg(not(test))]
+    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+        .map(PathBuf::from)
+        .ok_or_else(|| invalid("A user home directory is required for profile bindings"))?;
+    if !home.is_absolute() {
+        return Err(invalid("Profile binding home must be an absolute path"));
+    }
+    #[cfg(test)]
+    if !home.exists() {
+        fs::create_dir(&home)?;
+    }
+    private_directory(&home, false)?;
+    let digest = Sha256::digest(root.as_os_str().as_encoded_bytes());
+    let key: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    let bindings = home.join(".arkive-profile-bindings");
+    private_directory(&bindings, true)?;
+    let vault = bindings.join(key);
+    private_directory(&vault, true)?;
+    Ok(vault.join(format!("{name}.json")))
+}
+
+fn private_directory(path: &Path, create: bool) -> Result<(), AppError> {
+    if create && !exists(path)? {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            fs::DirBuilder::new().mode(0o700).create(path)?;
+        }
+        #[cfg(not(unix))]
+        fs::create_dir(path)?;
+    }
+    require_directory(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = fs::symlink_metadata(path)?;
+        let allowed = if create { 0o077 } else { 0o022 };
+        if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & allowed != 0 {
+            return Err(invalid(format!(
+                "Profile binding directory is not private to this user: {path:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn local_binding(root: &Path, name: &str) -> Result<Option<LocalBinding>, AppError> {
+    let path = binding_path(root, name)?;
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return io_at(Err(error), "inspect profile binding", &path),
+    };
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(invalid(format!(
+            "Profile binding must be a regular file: {path:?}"
+        )));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o077 != 0 {
+            return Err(invalid(format!("Profile binding is not private: {path:?}")));
+        }
+    }
+    let mut bytes = Vec::new();
+    io_at(
+        File::open(&path)?
+            .take(MAX_PROFILE_BYTES as u64 + 1)
+            .read_to_end(&mut bytes),
+        "read profile binding",
+        &path,
+    )?;
+    if bytes.len() > MAX_PROFILE_BYTES {
+        return Err(invalid("Profile binding exceeds 64 KiB"));
+    }
+    let binding: LocalBinding = serde_json::from_slice(&bytes)
+        .map_err(|error| invalid(format!("Invalid local profile binding: {error}")))?;
+    Ok(Some(binding))
+}
+
+fn bind(root: &Path, name: &str, source: &Path, replace: bool) -> Result<(), AppError> {
+    if let Some(binding) = local_binding(root, name)? {
+        if binding.vault == root && binding.source == source {
+            return Ok(());
+        }
+        if !replace {
+            return Err(invalid(format!(
+                "Profile {name:?} has a different local source binding"
+            )));
+        }
+        let path = binding_path(root, name)?;
+        io_at(fs::remove_file(&path), "replace profile binding", &path)?;
+    }
+    let path = binding_path(root, name)?;
+    let bytes = serde_json::to_vec(&LocalBinding {
+        vault: root.to_path_buf(),
+        source: source.to_path_buf(),
+    })
+    .map_err(|error| invalid(format!("Could not encode profile binding: {error}")))?;
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = io_at(options.open(&path), "create profile binding", &path)?;
+    io_at(file.write_all(&bytes), "write profile binding", &path)?;
+    io_at(file.sync_all(), "flush profile binding", &path)
+}
+
+fn require_binding(root: &Path, name: &str, source: &Path) -> Result<(), AppError> {
+    let Some(binding) = local_binding(root, name)? else {
+        return Err(invalid(format!(
+            "Profile {name:?} has no local source binding; run vault profile add with its approved source on this host"
+        )));
+    };
+    if binding.vault != root || binding.source != source {
+        return Err(invalid(format!(
+            "Profile {name:?} source differs from its locally approved path"
+        )));
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -138,6 +279,7 @@ fn source_path(root: &Path, source: &Path) -> Result<PathBuf, AppError> {
 /// Resolve and validate a profile's current source path before a snapshot comparison.
 pub(super) fn source(root: &Path, name: &str) -> Result<PathBuf, AppError> {
     let profile = load(root, name)?;
+    require_binding(root, name, &profile.source)?;
     source_path(root, &profile.source)
 }
 
@@ -153,7 +295,12 @@ pub fn add(path: &Path, name: &str, source: &Path, dry_run: bool) -> Result<(), 
     if dry_run {
         ensure_unlocked(&root)?;
         if exists(&destination)? {
-            return Err(invalid(format!("Profile already exists: {name:?}")));
+            let existing = load(&root, name)?;
+            if existing.source != source || local_binding(&root, name)?.is_some() {
+                return Err(invalid(format!("Profile already exists: {name:?}")));
+            }
+            println!("[DRY-RUN] Would approve profile {name:?} for {source:?} on this host");
+            return Ok(());
         }
         println!("[DRY-RUN] Would add profile {name:?} for {source:?}; no profile written");
         return Ok(());
@@ -163,17 +310,23 @@ pub fn add(path: &Path, name: &str, source: &Path, dry_run: bool) -> Result<(), 
     let result = (|| {
         validate(&root)?;
         if exists(&destination)? {
-            return Err(invalid(format!("Profile already exists: {name:?}")));
+            let existing = load(&root, name)?;
+            if existing.source != source || local_binding(&root, name)?.is_some() {
+                return Err(invalid(format!("Profile already exists: {name:?}")));
+            }
+            bind(&root, name, &source, false)?;
+            return Ok(());
         }
         let profile = Profile {
             format: FORMAT.into(),
             version: VERSION,
             name: name.into(),
-            source,
+            source: source.clone(),
             created_at: Utc::now(),
         };
         let bytes = serde_json::to_vec_pretty(&profile)
             .map_err(|error| invalid(format!("Could not encode profile: {error}")))?;
+        bind(&root, name, &source, true)?;
         with_scratch(&root, |scratch| {
             let staged = scratch.join("profile.json");
             write_new(&staged, &bytes)?;
@@ -235,6 +388,14 @@ pub fn remove(path: &Path, name: &str, dry_run: bool) -> Result<(), AppError> {
     let result = (|| {
         validate(&root)?;
         load(&root, name)?;
+        let binding = binding_path(&root, name)?;
+        if exists(&binding)? {
+            io_at(
+                fs::remove_file(&binding),
+                "remove profile binding",
+                &binding,
+            )?;
+        }
         io_at(
             fs::remove_file(&destination),
             "remove profile",

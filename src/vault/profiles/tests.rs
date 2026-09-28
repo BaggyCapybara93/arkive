@@ -71,3 +71,113 @@ fn profiles_reject_symlink_sources() {
     symlink(&target, &link).unwrap();
     assert!(add(&vault, "linked", &link, false).is_err());
 }
+
+#[test]
+fn shared_profile_edit_cannot_redirect_snapshot_source() {
+    let (_temp, vault, saves) = setup("profiles-redirection");
+    let private = vault.parent().unwrap().join("private-save");
+    fs::write(saves.join("save.dat"), b"approved").unwrap();
+    fs::write(&private, b"private").unwrap();
+    add(&vault, "game", &saves, false).unwrap();
+
+    let root = vault.canonicalize().unwrap();
+    let profile_file = profile_path(&root, "game").unwrap();
+    let original = fs::read(&profile_file).unwrap();
+    let mut profile: Profile = serde_json::from_slice(&original).unwrap();
+    profile.source = private.canonicalize().unwrap();
+    fs::write(&profile_file, serde_json::to_vec(&profile).unwrap()).unwrap();
+    assert!(
+        crate::vault::snapshots::create_selected(&vault, None, Some("game"), None, false, false)
+            .is_err()
+    );
+    assert_eq!(
+        fs::read_dir(root.join(CONTROL).join("objects"))
+            .unwrap()
+            .count(),
+        0
+    );
+    assert_eq!(
+        fs::read_dir(root.join(CONTROL).join("snapshots"))
+            .unwrap()
+            .count(),
+        0
+    );
+
+    fs::write(&profile_file, original).unwrap();
+    crate::vault::snapshots::create_selected(&vault, None, Some("game"), None, false, false)
+        .unwrap();
+    assert_eq!(
+        fs::read_dir(root.join(CONTROL).join("snapshots"))
+            .unwrap()
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn profile_from_shared_vault_needs_explicit_local_approval() {
+    let (_temp, vault, saves) = setup("profiles-local-approval");
+    fs::write(saves.join("save.dat"), b"approved").unwrap();
+    let root = vault.canonicalize().unwrap();
+    let profile = Profile {
+        format: FORMAT.into(),
+        version: VERSION,
+        name: "game".into(),
+        source: saves.canonicalize().unwrap(),
+        created_at: Utc::now(),
+    };
+    fs::write(
+        profile_path(&root, "game").unwrap(),
+        serde_json::to_vec(&profile).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        crate::vault::snapshots::create_selected(&vault, None, Some("game"), None, false, false)
+            .is_err()
+    );
+    add(&vault, "game", &saves, false).unwrap();
+    crate::vault::snapshots::create_selected(&vault, None, Some("game"), None, false, false)
+        .unwrap();
+}
+
+#[test]
+fn unavailable_local_binding_does_not_publish_profile() {
+    let (_temp, vault, saves) = setup("profiles-binding-failure");
+    let home = vault.parent().unwrap().join("test-home");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join(".arkive-profile-bindings"), b"blocked").unwrap();
+    assert!(add(&vault, "game", &saves, false).is_err());
+    assert!(all(&vault.canonicalize().unwrap()).unwrap().is_empty());
+}
+
+#[test]
+fn stale_binding_can_be_replaced_after_remote_profile_removal() {
+    let (_temp, vault, saves) = setup("profiles-stale-binding");
+    let replacement = vault.parent().unwrap().join("replacement");
+    fs::create_dir(&replacement).unwrap();
+    add(&vault, "game", &saves, false).unwrap();
+    let root = vault.canonicalize().unwrap();
+    fs::remove_file(profile_path(&root, "game").unwrap()).unwrap();
+
+    add(&vault, "game", &replacement, false).unwrap();
+    assert_eq!(
+        source(&root, "game").unwrap(),
+        replacement.canonicalize().unwrap()
+    );
+}
+
+#[test]
+fn unavailable_binding_does_not_remove_shared_profile() {
+    let (_temp, vault, saves) = setup("profiles-remove-binding-failure");
+    add(&vault, "game", &saves, false).unwrap();
+    let home = vault.parent().unwrap().join("test-home");
+    fs::rename(&home, vault.parent().unwrap().join("old-test-home")).unwrap();
+    fs::write(&home, b"blocked").unwrap();
+
+    assert!(remove(&vault, "game", false).is_err());
+    assert!(
+        profile_path(&vault.canonicalize().unwrap(), "game")
+            .unwrap()
+            .exists()
+    );
+}

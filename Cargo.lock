@@ -85,6 +85,7 @@ dependencies = [
  "clap",
  "flate2",
  "indicatif",
+ "libc",
  "lz4_flex",
  "parking_lot",
  "regex",

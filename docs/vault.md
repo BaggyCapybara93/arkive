@@ -100,8 +100,13 @@ arkive vault profile remove /mnt/saves/arkive my-game
 
 Profile creation validates that the source exists, is a regular file or
 directory, is not a symlink, and does not overlap the vault. Profile files are
-published atomically. Removing a profile only removes its mapping; snapshots
-and live save data are preserved.
+published atomically. The approved source is also bound in the current user's
+home directory, outside the shared vault. If a profile was created on another
+host or before this binding was introduced, run `vault profile add` again with
+the existing name and the source path you approve on this host. Arkive refuses
+`--profile` operations when the shared profile's source differs from that local
+approval. Removing a profile removes its local binding; snapshots and live save
+data are preserved.
 
 ## Verify and list snapshots
 
