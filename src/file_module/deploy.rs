@@ -466,6 +466,11 @@ fn extract_archive_limited<R: Read>(
 
         let path = entry.path()?.into_owned();
         validate_archive_path(&path, limits)?;
+        if entry.header().entry_type().is_symlink() {
+            return Err(FileManagerError::InvalidInput(format!(
+                "Tar archive entry is a symbolic link: {path:?}"
+            )));
+        }
         let size = entry.size();
         if size > limits.file_bytes {
             return Err(FileManagerError::InvalidInput(format!(
@@ -787,6 +792,8 @@ mod tests {
     use flate2::read::GzDecoder;
     use flate2::write::GzEncoder;
     use std::fs;
+    #[cfg(unix)]
+    use std::io;
     use std::io::{Cursor, Write};
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
@@ -804,6 +811,20 @@ mod tests {
                 .append_data(&mut header, path, Cursor::new(*data))
                 .unwrap();
         }
+        archive.into_inner().unwrap().finish().unwrap()
+    }
+
+    #[cfg(unix)]
+    fn gzip_archive_with_symlink(path: &str, link_target: &str) -> Vec<u8> {
+        let encoder = GzEncoder::new(Vec::new(), Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(0);
+        header.set_mode(0o777);
+        header.set_entry_type(tar::EntryType::Symlink);
+        header.set_link_name(link_target).unwrap();
+        header.set_cksum();
+        archive.append_data(&mut header, path, io::empty()).unwrap();
         archive.into_inner().unwrap().finish().unwrap()
     }
 
@@ -1000,6 +1021,124 @@ mod tests {
             b"deployment"
         );
         assert!(!target.join("keep.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn forced_tar_deploy_rejects_symlink_root_without_replacing_target() {
+        let temp = TestDir::new("deploy-tar-symlink-root");
+        let backup = temp.path().join("backup.tar.gz");
+        let target = temp.path().join("target");
+        let outside = temp.path().join("outside");
+        fs::write(
+            &backup,
+            gzip_archive_with_symlink("root", outside.to_str().unwrap()),
+        )
+        .unwrap();
+        fs::write(&target, b"previous deployment").unwrap();
+        save_manifest(
+            &target,
+            &backup,
+            BackupKind::Compress,
+            Some(CompressionMethod::Gzip),
+        )
+        .unwrap();
+
+        assert!(deploy(&backup, Some(&target), true, false, &Settings::default()).is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"previous deployment");
+
+        fs::remove_file(&target).unwrap();
+        assert!(deploy(&backup, Some(&target), true, false, &Settings::default()).is_err());
+        assert!(!target.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn forced_tar_deploy_rejects_nested_symlink_without_replacing_target() {
+        let temp = TestDir::new("deploy-tar-symlink-nested");
+        let backup = temp.path().join("backup.tar.gz");
+        let target = temp.path().join("target");
+        let encoder = GzEncoder::new(Vec::new(), Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(4);
+        header.set_mode(0o600);
+        header.set_entry_type(tar::EntryType::Regular);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, "root/save", Cursor::new(b"save"))
+            .unwrap();
+        let mut header = tar::Header::new_gnu();
+        header.set_size(0);
+        header.set_mode(0o777);
+        header.set_entry_type(tar::EntryType::Symlink);
+        header.set_link_name("../../outside").unwrap();
+        header.set_cksum();
+        archive
+            .append_data(&mut header, "root/link", io::empty())
+            .unwrap();
+        fs::write(&backup, archive.into_inner().unwrap().finish().unwrap()).unwrap();
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("keep"), b"previous deployment").unwrap();
+        save_manifest(
+            &target,
+            &backup,
+            BackupKind::Compress,
+            Some(CompressionMethod::Gzip),
+        )
+        .unwrap();
+
+        assert!(deploy(&backup, Some(&target), true, false, &Settings::default()).is_err());
+        assert_eq!(
+            fs::read(target.join("keep")).unwrap(),
+            b"previous deployment"
+        );
+    }
+
+    #[test]
+    fn forced_tar_deploy_replaces_target_with_regular_file() {
+        let temp = TestDir::new("deploy-tar-force-regular");
+        let backup = temp.path().join("backup.tar.gz");
+        let target = temp.path().join("target");
+        fs::write(&backup, gzip_archive(&[("root", b"replacement")])).unwrap();
+        fs::write(&target, b"previous deployment").unwrap();
+        save_manifest(
+            &target,
+            &backup,
+            BackupKind::Compress,
+            Some(CompressionMethod::Gzip),
+        )
+        .unwrap();
+
+        deploy(&backup, Some(&target), true, false, &Settings::default()).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"replacement");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn forced_tar_deploy_accepts_arkive_backup_with_source_symlink() {
+        let temp = TestDir::new("deploy-tar-source-symlink");
+        let source = temp.path().join("source");
+        let backup = temp.path().join("backup.tar.gz");
+        let target = temp.path().join("target");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("save"), b"save data").unwrap();
+        symlink(source.join("save"), source.join("link")).unwrap();
+        FileManager::new(&source, &backup, &Settings::default())
+            .compress_path(CompressionMethod::Gzip, false)
+            .unwrap();
+        fs::create_dir(&target).unwrap();
+        save_manifest(
+            &target,
+            &backup,
+            BackupKind::Compress,
+            Some(CompressionMethod::Gzip),
+        )
+        .unwrap();
+
+        deploy(&backup, Some(&target), true, false, &Settings::default()).unwrap();
+        assert_eq!(fs::read(target.join("link")).unwrap(), b"save data");
+        assert!(fs::symlink_metadata(target.join("link")).unwrap().is_file());
     }
 
     #[test]

@@ -93,5 +93,6 @@ and malformed archives, compressed deployment accepts at most 100,000 entries,
 8 GiB per file, 16 GiB total expanded data, 4 KiB paths, and 128 path
 components. An archive exceeding a limit is rejected before it is published to
 the destination. XZ deployment additionally caps decoder memory at 256 MiB.
+Tar deployment rejects symbolic link entries.
 ZIP deployment only accepts unencrypted Stored or Deflate entries and rejects
 unsafe paths, symbolic links, duplicate paths, and overlapping entries.
