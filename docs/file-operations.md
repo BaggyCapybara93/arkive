@@ -28,6 +28,9 @@ arkive copy [--recursive] <SRC> <DEST>
 
 Copy a file or directory. Directories require `--recursive`. Regular file
 copies are verified by comparing source and destination SHA-256 hashes.
+Recursive copies reject included symbolic links within the source or symbolic
+links in an existing destination directory, leaving the destination unchanged
+on failure.
 
 ```bash
 arkive copy file1.txt backup/

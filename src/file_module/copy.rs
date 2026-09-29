@@ -1,6 +1,22 @@
 use std::fs;
 use std::path::Path;
 
+#[cfg(unix)]
+use std::ffi::OsStr;
+#[cfg(unix)]
+use std::fs::{File, OpenOptions};
+#[cfg(unix)]
+use std::io::{Read, Write};
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
+
+#[cfg(unix)]
+use rustix::fs::{AtFlags, Dir, FileType, Mode, OFlags, openat, statat};
+#[cfg(unix)]
+use rustix::io::Errno;
+#[cfg(unix)]
+use sha2::{Digest, Sha256};
+
 use indicatif::ProgressBar;
 
 use crate::file_module::add_timestamp_to_path;
@@ -88,6 +104,7 @@ pub fn copy_dir_recursive_filtered(
     result
 }
 
+#[cfg(not(unix))]
 fn copy_directory_contents(
     src: &Path,
     dst: &Path,
@@ -113,6 +130,12 @@ fn copy_directory_contents(
                 bar.inc(stats.entries - previous_entries);
             }
             continue;
+        }
+
+        if file_type.is_symlink() {
+            return Err(FileManagerError::InvalidInput(format!(
+                "Directory copy cannot contain symbolic links: {src_path:?}"
+            )));
         }
 
         if file_type.is_dir() {
@@ -147,6 +170,211 @@ fn copy_directory_contents(
     }
 
     Ok(())
+}
+
+#[cfg(unix)]
+fn copy_directory_contents(
+    src: &Path,
+    dst: &Path,
+    progress: Option<&ProgressBar>,
+    matcher: Option<&IgnoreMatcher>,
+    verify_files: bool,
+    stats: &mut IgnoreStats,
+) -> Result<(), FileManagerError> {
+    let source = openat(
+        rustix::fs::CWD,
+        src,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(std::io::Error::from)?;
+    let mut source = Dir::new(source).map_err(std::io::Error::from)?;
+    copy_open_directory_contents(
+        &mut source,
+        src,
+        dst,
+        progress,
+        matcher,
+        verify_files,
+        stats,
+    )
+}
+
+#[cfg(unix)]
+fn copy_open_directory_contents(
+    source: &mut Dir,
+    src: &Path,
+    dst: &Path,
+    progress: Option<&ProgressBar>,
+    matcher: Option<&IgnoreMatcher>,
+    verify_files: bool,
+    stats: &mut IgnoreStats,
+) -> Result<(), FileManagerError> {
+    while let Some(entry) = source.read() {
+        let entry = entry.map_err(std::io::Error::from)?;
+        let name = OsStr::from_bytes(entry.file_name().to_bytes());
+        if name == "." || name == ".." {
+            continue;
+        }
+        let src_path = src.join(name);
+        let dst_path = dst.join(name);
+        let metadata = statat(
+            source.fd().map_err(std::io::Error::from)?,
+            name,
+            AtFlags::SYMLINK_NOFOLLOW,
+        )
+        .map_err(std::io::Error::from)?;
+        let file_type = FileType::from_raw_mode(metadata.st_mode);
+
+        // Preserve ignore rules for symlinks, including size rules, without
+        // ever opening the link as a file to copy.
+        let size = if file_type.is_symlink() && matcher.is_some() {
+            statat(
+                source.fd().map_err(std::io::Error::from)?,
+                name,
+                AtFlags::empty(),
+            )
+            .map_err(std::io::Error::from)?
+            .st_size
+        } else {
+            metadata.st_size
+        };
+        if matcher.is_some_and(|matcher| {
+            matcher.is_excluded(&src_path, file_type.is_dir(), size.max(0) as u64)
+        }) {
+            let previous_entries = stats.entries;
+            stats.record(&src_path)?;
+            if let Some(bar) = progress {
+                bar.inc(stats.entries - previous_entries);
+            }
+            continue;
+        }
+
+        if file_type.is_symlink() {
+            return Err(FileManagerError::InvalidInput(format!(
+                "Directory copy cannot contain symbolic links: {src_path:?}"
+            )));
+        }
+
+        let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        if file_type.is_dir() {
+            let opened = openat(
+                source.fd().map_err(std::io::Error::from)?,
+                name,
+                flags | OFlags::DIRECTORY,
+                Mode::empty(),
+            )
+            .map_err(std::io::Error::from)?;
+            match fs::symlink_metadata(&dst_path) {
+                Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                    return Err(FileManagerError::InvalidInput(format!(
+                        "Destination {:?} is not a directory",
+                        dst_path
+                    )));
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    fs::create_dir(&dst_path)?;
+                }
+                Err(error) => return Err(error.into()),
+            }
+            let mut child = Dir::new(opened).map_err(std::io::Error::from)?;
+            copy_open_directory_contents(
+                &mut child,
+                &src_path,
+                &dst_path,
+                progress,
+                matcher,
+                verify_files,
+                stats,
+            )?;
+        } else if file_type.is_file() {
+            let opened = openat(
+                source.fd().map_err(std::io::Error::from)?,
+                name,
+                flags | OFlags::NONBLOCK,
+                Mode::empty(),
+            )
+            .map_err(|error| {
+                if error == Errno::LOOP {
+                    FileManagerError::InvalidInput(format!(
+                        "Directory copy cannot contain symbolic links: {src_path:?}"
+                    ))
+                } else {
+                    FileManagerError::Io(error.into())
+                }
+            })?;
+            let mut opened = File::from(opened);
+            if !opened.metadata()?.is_file() {
+                return Err(FileManagerError::InvalidInput(format!(
+                    "Directory copy source changed type: {src_path:?}"
+                )));
+            }
+            copy_open_file(&mut opened, &dst_path, verify_files)?;
+        } else {
+            return Err(FileManagerError::InvalidInput(format!(
+                "Directory copy requires regular files and directories: {src_path:?}"
+            )));
+        }
+
+        if let Some(bar) = progress {
+            bar.inc(1);
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn copy_open_file(src: &mut File, dst: &Path, verify: bool) -> Result<(), FileManagerError> {
+    let target = if verify {
+        create_temp_file_sibling(dst)?
+    } else {
+        dst.to_path_buf()
+    };
+    let result = (|| {
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&target)?;
+        let mut source_hash = Sha256::new();
+        let mut buffer = [0u8; 8192];
+        loop {
+            let read = src.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            output.write_all(&buffer[..read])?;
+            if verify {
+                source_hash.update(&buffer[..read]);
+            }
+        }
+        drop(output);
+        fs::set_permissions(&target, src.metadata()?.permissions())?;
+
+        if verify {
+            let mut copied = File::open(&target)?;
+            let mut copied_hash = Sha256::new();
+            loop {
+                let read = copied.read(&mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                copied_hash.update(&buffer[..read]);
+            }
+            if source_hash.finalize() != copied_hash.finalize() {
+                return Err(FileManagerError::HashMismatch);
+            }
+            fs::rename(&target, dst)?;
+        }
+        Ok(())
+    })();
+
+    if result.is_err() && verify {
+        let _ = fs::remove_file(&target);
+    }
+    result
 }
 
 fn copy_file_verified(src: &Path, dst: &Path) -> Result<(), FileManagerError> {
@@ -317,7 +545,8 @@ impl<'a> FileManager<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::FileManager;
+    use super::{FileManager, copy_dir_recursive, copy_dir_recursive_filtered};
+    use crate::file_module::ignore::{IgnoreMatcher, IgnoreOptions, IgnoreStats};
     use crate::settings::Settings;
     use crate::test::TestDir;
 
@@ -448,5 +677,139 @@ mod tests {
             b"keep me"
         );
         assert!(!destination.join("nested/child.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_copy_rejects_nested_source_symlink_without_replacing_destination() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TestDir::new("copy-source-symlink");
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        let outside = temp.path().join("secret.txt");
+        std::fs::create_dir_all(source.join("nested")).unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        std::fs::write(&outside, b"private data").unwrap();
+        std::fs::write(destination.join("keep.txt"), b"keep").unwrap();
+        symlink("../../secret.txt", source.join("nested/linked.txt")).unwrap();
+
+        let result = copy_dir_recursive(&source, &destination, None);
+
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read(destination.join("keep.txt")).unwrap(),
+            b"keep"
+        );
+        assert!(!destination.join("nested/linked.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_copy_rejects_existing_destination_symlink_without_materializing_it() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TestDir::new("copy-destination-symlink");
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        let outside = temp.path().join("secret.txt");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::create_dir_all(destination.join("nested")).unwrap();
+        std::fs::write(source.join("new.txt"), b"new").unwrap();
+        std::fs::write(&outside, b"private data").unwrap();
+        symlink(&outside, destination.join("nested/linked.txt")).unwrap();
+
+        let result = copy_dir_recursive(&source, &destination, None);
+
+        assert!(result.is_err());
+        assert!(
+            std::fs::symlink_metadata(destination.join("nested/linked.txt"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(!destination.join("new.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_copy_allows_excluded_symlink_without_copying_its_target() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TestDir::new("copy-excluded-symlink");
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        let outside = temp.path().join("secret.txt");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("keep.txt"), b"keep").unwrap();
+        std::fs::write(&outside, b"private data").unwrap();
+        symlink(&outside, source.join("linked.txt")).unwrap();
+        let matcher = IgnoreMatcher::build(
+            &source,
+            &IgnoreOptions {
+                no_global: true,
+                no_local: true,
+                excludes: vec!["linked.txt".into()],
+                ..IgnoreOptions::default()
+            },
+        )
+        .unwrap();
+        let mut stats = IgnoreStats::default();
+
+        copy_dir_recursive_filtered(&source, &destination, None, Some(&matcher), &mut stats)
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read(destination.join("keep.txt")).unwrap(),
+            b"keep"
+        );
+        assert!(!destination.join("linked.txt").exists());
+        assert_eq!(stats.entries, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_directory_copy_keeps_the_original_tree_after_path_replacement() {
+        use super::copy_open_directory_contents;
+        use crate::file_module::ignore::IgnoreStats;
+        use rustix::fs::{Dir, Mode, OFlags, openat};
+        use std::os::unix::fs::symlink;
+
+        let temp = TestDir::new("copy-replaced-directory");
+        let source = temp.path().join("source");
+        let moved = temp.path().join("moved");
+        let outside = temp.path().join("outside");
+        let destination = temp.path().join("destination");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        std::fs::write(source.join("file.txt"), b"original").unwrap();
+        std::fs::write(outside.join("file.txt"), b"private data").unwrap();
+        let opened = openat(
+            rustix::fs::CWD,
+            &source,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .unwrap();
+        let mut opened = Dir::new(opened).unwrap();
+        std::fs::rename(&source, &moved).unwrap();
+        symlink(&outside, &source).unwrap();
+
+        copy_open_directory_contents(
+            &mut opened,
+            &source,
+            &destination,
+            None,
+            None,
+            true,
+            &mut IgnoreStats::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read(destination.join("file.txt")).unwrap(),
+            b"original"
+        );
     }
 }
