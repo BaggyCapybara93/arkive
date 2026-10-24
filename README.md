@@ -12,6 +12,7 @@ and local-first game-save storage.
 - Create gzip, Zstandard, LZ4, XZ, or bzip2 tar archives, plus portable ZIP archives
 - Create portable backup metadata and deploy backups safely
 - Rename, remove, deduplicate, and clean up files
+- Organize files into extension folders with optional folder metadata and undo
 - Run file operations from JSON batch files
 - Initialize filesystem-backed vaults and check local or OS-mounted SMB/NFS paths
 - Capture immutable, deduplicated save snapshots and restore them safely
@@ -78,6 +79,7 @@ See the focused documentation for details and safety notes:
 - [Vaults and save snapshots](docs/vault.md)
 - [Copy, move, compress, and deploy](docs/file-operations.md)
 - [Ignore rules, rename, remove, trash, and cleanup](docs/ignore-and-cleanup.md)
+- [Organize files into folders](docs/organize.md)
 - [Batch files and configuration](docs/batch-and-configuration.md)
 
 The complete command syntax is also available from the binary:

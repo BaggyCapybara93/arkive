@@ -8,6 +8,7 @@ pub mod ignore;
 pub mod manager;
 pub mod metadata;
 pub mod ops;
+pub mod organize;
 pub mod remove;
 pub mod rename;
 pub mod trash;

@@ -5,6 +5,7 @@ use crate::file_module::cleanup;
 use crate::file_module::compress::{ArchiveFormat, CompressionMethod};
 use crate::file_module::deploy::{self, BackupKind};
 use crate::file_module::ignore::{IgnoreMatcher, IgnoreOptions};
+use crate::file_module::organize;
 use crate::file_module::remove;
 use crate::settings::Settings;
 use clap::{Args, Parser, Subcommand, ValueEnum, value_parser};
@@ -68,6 +69,11 @@ impl From<&IgnoreArgs> for IgnoreOptions {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Sort files in one directory into extension-named folders
+    Organize {
+        #[command(subcommand)]
+        command: OrganizeCommand,
+    },
     /// View or update Arkive's persistent configuration
     Config {
         #[command(subcommand)]
@@ -239,6 +245,23 @@ pub enum Command {
         /// Keep files in arkive trash instead of permanently deleting
         #[arg(long, help = "Move files to arkive trash")]
         trash: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum OrganizeCommand {
+    /// Move regular files into extension-named folders
+    ByExtension {
+        /// Directory whose immediate files will be organized
+        path: PathBuf,
+        /// Write .arkive-folder.json in each destination folder
+        #[arg(long)]
+        folder_metadata: bool,
+    },
+    /// Reverse an organize run using its saved manifest
+    Undo {
+        /// .arkive-organize-*.json manifest printed by the run
+        manifest: PathBuf,
     },
 }
 
@@ -751,6 +774,19 @@ pub fn cli_handler(
     dry_run_requested: bool,
 ) -> Result<(), AppError> {
     match cmd {
+        Command::Organize { command } => match command {
+            OrganizeCommand::ByExtension {
+                path,
+                folder_metadata,
+            } => {
+                organize::by_extension(&path, folder_metadata, settings)?;
+                Ok(())
+            }
+            OrganizeCommand::Undo { manifest } => {
+                organize::undo(&manifest, settings)?;
+                Ok(())
+            }
+        },
         Command::Config { command } => handle_config(command, config_manager, dry_run_requested),
         Command::Vault { command } => match command {
             VaultCommand::Init { path } => crate::vault::init(&path, settings.dry_run),
