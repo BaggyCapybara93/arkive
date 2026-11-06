@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use thiserror::Error;
 
 //Error Handling
@@ -5,6 +6,14 @@ use thiserror::Error;
 pub enum FileManagerError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("I/O error while {operation} at {path}: {source}", path = path.display())]
+    IoAt {
+        operation: &'static str,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 
     #[error("Hash mismatch after copy — file may be corrupted")]
     HashMismatch,

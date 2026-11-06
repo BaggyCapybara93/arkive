@@ -1,10 +1,18 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use crate::file_module::FileManager;
 use crate::file_module::error::FileManagerError;
 use crate::file_validation::handlers::valid_directory;
+
+fn cleanup_io(operation: &'static str, path: &Path, source: std::io::Error) -> FileManagerError {
+    FileManagerError::IoAt {
+        operation,
+        path: path.to_path_buf(),
+        source,
+    }
+}
 
 impl<'a> FileManager<'a> {
     /// Clean up the workspace with multiple options
@@ -143,7 +151,6 @@ impl<'a> FileManager<'a> {
 
         valid_directory(src)?;
 
-        let mut empty_count = 0;
         let mut empty_dirs: Vec<PathBuf> = Vec::new();
         let progress = Some(FileManager::create_spinner(
             "Scanning for empty directories",
@@ -168,15 +175,9 @@ impl<'a> FileManager<'a> {
             return Ok(());
         }
 
-        // Remove empty directories (in reverse order to handle nested)
-        for dir_path in empty_dirs.into_iter().rev() {
-            if fs::remove_dir(&dir_path).is_ok() {
-                if self.settings.verbose {
-                    println!("Removing empty directory: {:?}", dir_path);
-                }
-                empty_count += 1;
-            }
-        }
+        // Remove empty directories in reverse order to handle nested paths.
+        let empty_count =
+            Self::remove_empty_dirs(empty_dirs.into_iter().rev(), self.settings.verbose)?;
 
         if self.settings.verbose {
             println!("Scan complete: {} empty directories removed", empty_count);
@@ -185,51 +186,69 @@ impl<'a> FileManager<'a> {
         Ok(())
     }
 
+    fn remove_empty_dirs(
+        paths: impl IntoIterator<Item = PathBuf>,
+        verbose: bool,
+    ) -> Result<usize, FileManagerError> {
+        let mut removed = 0;
+        for path in paths {
+            fs::remove_dir(&path)
+                .map_err(|error| cleanup_io("remove empty directory", &path, error))?;
+            if verbose {
+                println!("Removing empty directory: {:?}", path);
+            }
+            removed += 1;
+        }
+        Ok(removed)
+    }
+
     fn find_empty_dirs_recursive(
         path: &PathBuf,
         empty_dirs: &mut Vec<PathBuf>,
         progress: Option<&indicatif::ProgressBar>,
     ) -> Result<(), FileManagerError> {
-        match fs::read_dir(path) {
-            Ok(entries) => {
-                for entry in entries {
-                    let entry = entry?;
-                    let entry_path = entry.path();
-                    let file_type = entry.file_type()?;
+        let entries =
+            fs::read_dir(path).map_err(|error| cleanup_io("scan directory", path, error))?;
+        for entry in entries {
+            let entry = entry.map_err(|error| cleanup_io("read directory entry", path, error))?;
+            let entry_path = entry.path();
+            let file_type = entry
+                .file_type()
+                .map_err(|error| cleanup_io("inspect directory entry", &entry_path, error))?;
 
-                    if file_type.is_symlink() {
-                        continue;
-                    }
-
-                    if file_type.is_dir() {
-                        Self::find_empty_dirs_recursive(&entry_path, empty_dirs, progress)?;
-
-                        // Check if directory is empty after children processed.
-                        // A subdirectory that was JUST found empty is still on
-                        // disk at this point (actual deletion happens later, in
-                        // scan_and_remove_empty_dirs), so a plain count would
-                        // wrongly see it as "not empty" and this parent would
-                        // never be flagged. Exclude anything already queued
-                        // for removal from the count.
-                        if let Ok(sub_entries) = fs::read_dir(&entry_path) {
-                            let remaining = sub_entries
-                                .filter_map(|e| e.ok())
-                                .filter(|e| !empty_dirs.contains(&e.path()))
-                                .count();
-                            if remaining == 0 {
-                                empty_dirs.push(entry_path.clone());
-                            }
-                        }
-                    }
-
-                    if let Some(bar) = progress {
-                        bar.inc(1);
-                    }
-                }
-                Ok(())
+            if file_type.is_symlink() {
+                continue;
             }
-            Err(_) => Ok(()),
+
+            if file_type.is_dir() {
+                Self::find_empty_dirs_recursive(&entry_path, empty_dirs, progress)?;
+
+                // Check if directory is empty after children processed.
+                // A subdirectory that was JUST found empty is still on
+                // disk at this point (actual deletion happens later, in
+                // scan_and_remove_empty_dirs), so a plain count would
+                // wrongly see it as "not empty" and this parent would
+                // never be flagged. Exclude anything already queued
+                // for removal from the count.
+                let sub_entries = fs::read_dir(&entry_path)
+                    .map_err(|error| cleanup_io("scan directory", &entry_path, error))?;
+                let sub_entries = sub_entries
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| cleanup_io("read directory entry", &entry_path, error))?;
+                let remaining = sub_entries
+                    .into_iter()
+                    .filter(|e| !empty_dirs.contains(&e.path()))
+                    .count();
+                if remaining == 0 {
+                    empty_dirs.push(entry_path.clone());
+                }
+            }
+
+            if let Some(bar) = progress {
+                bar.inc(1);
+            }
         }
+        Ok(())
     }
 }
 
@@ -252,8 +271,47 @@ pub struct CleanupOptions {
 #[cfg(test)]
 mod tests {
     use super::{CleanupOptions, FileManager};
+    use crate::file_module::FileManagerError;
     use crate::settings::Settings;
     use crate::test::TestDir;
+    use std::io::ErrorKind;
+
+    #[test]
+    fn empty_directory_scan_reports_read_failure_with_path() {
+        let temp = TestDir::new("cleanup-scan-error");
+        let missing = temp.path().join("missing");
+        let error =
+            FileManager::find_empty_dirs_recursive(&missing, &mut Vec::new(), None).unwrap_err();
+
+        assert!(matches!(
+            error,
+            FileManagerError::IoAt {
+                operation: "scan directory",
+                path,
+                source,
+            } if path == missing && source.kind() == ErrorKind::NotFound
+        ));
+    }
+
+    #[test]
+    fn empty_directory_removal_reports_failure_with_path() {
+        let temp = TestDir::new("cleanup-remove-error");
+        let nonempty = temp.path().join("nonempty");
+        std::fs::create_dir(&nonempty).unwrap();
+        std::fs::write(nonempty.join("keep.txt"), b"keep").unwrap();
+
+        let error = FileManager::remove_empty_dirs(vec![nonempty.clone()], false).unwrap_err();
+
+        assert!(matches!(
+            error,
+            FileManagerError::IoAt {
+                operation: "remove empty directory",
+                path,
+                ..
+            } if path == nonempty
+        ));
+        assert!(nonempty.join("keep.txt").exists());
+    }
 
     #[cfg(unix)]
     #[test]
