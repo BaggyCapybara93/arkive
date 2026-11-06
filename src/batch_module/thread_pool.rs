@@ -1,4 +1,5 @@
 use crate::batch_module::{BatchError, Job};
+use crate::file_module::FileManagerError;
 use indicatif::ProgressBar;
 use std::sync::Arc;
 use std::{
@@ -7,13 +8,16 @@ use std::{
 };
 
 pub enum ThreadMessage {
-    Job(Job),
+    Job { index: usize, job: Job },
     Shutdown,
 }
 
 pub enum ThreadResult {
     Ok,
-    Err(String),
+    Err {
+        index: usize,
+        source: FileManagerError,
+    },
 }
 
 pub struct Worker {
@@ -56,16 +60,16 @@ impl ThreadPool {
                     };
 
                     match message {
-                        Ok(ThreadMessage::Job(job)) => match job.execute(progress.as_ref()) {
-                            Ok(_) => {
-                                let _ = result_sender.send(ThreadResult::Ok);
+                        Ok(ThreadMessage::Job { index, job }) => {
+                            match job.execute(progress.as_ref()) {
+                                Ok(_) => {
+                                    let _ = result_sender.send(ThreadResult::Ok);
+                                }
+                                Err(source) => {
+                                    let _ = result_sender.send(ThreadResult::Err { index, source });
+                                }
                             }
-                            Err(e) => {
-                                let _ = result_sender.send(ThreadResult::Err(format!(
-                                    "Worker {id} failed to execute job: {e}"
-                                )));
-                            }
-                        },
+                        }
 
                         Ok(ThreadMessage::Shutdown) => break,
                         Err(_) => break,
@@ -88,25 +92,35 @@ impl ThreadPool {
             let _ = self.sender.send(ThreadMessage::Shutdown);
         }
 
+        let mut worker_panicked = false;
         for worker in self.workers {
-            worker
-                .handle
-                .join()
-                .map_err(|_| BatchError::ThreadPool("Worker thread panicked".into()))?;
+            worker_panicked |= worker.handle.join().is_err();
         }
 
+        let mut first_failure: Option<(usize, FileManagerError)> = None;
         while let Ok(result) = self.result_receiver.recv() {
-            if let ThreadResult::Err(e) = result {
-                return Err(BatchError::Worker(e));
+            if let ThreadResult::Err { index, source } = result {
+                if first_failure
+                    .as_ref()
+                    .is_none_or(|(first_index, _)| index < *first_index)
+                {
+                    first_failure = Some((index, source));
+                }
             }
         }
 
-        Ok(())
+        if worker_panicked {
+            Err(BatchError::ThreadPool("Worker thread panicked".into()))
+        } else if let Some((index, source)) = first_failure {
+            Err(BatchError::Job { index, source })
+        } else {
+            Ok(())
+        }
     }
 
-    pub fn add_job(&self, job: Job) -> Result<(), BatchError> {
+    pub fn add_job(&self, index: usize, job: Job) -> Result<(), BatchError> {
         self.sender
-            .send(ThreadMessage::Job(job))
+            .send(ThreadMessage::Job { index, job })
             .map_err(|e| BatchError::ThreadPool(e.to_string()))
     }
 }

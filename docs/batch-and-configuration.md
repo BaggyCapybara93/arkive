@@ -66,7 +66,8 @@ needed for `empty_trash` alone.
 ```
 
 Batch jobs may run in parallel, so avoid operations that modify overlapping
-paths.
+paths. If a job fails, other queued jobs may still finish. The command exits
+with an error identifying the lowest-numbered failed job and its cause.
 
 ```bash
 arkive batch batch.json
