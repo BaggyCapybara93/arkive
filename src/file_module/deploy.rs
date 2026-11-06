@@ -14,7 +14,9 @@ use xz2::stream::Stream as XzStream;
 use crate::file_module::compress::{ArchiveFormat, CompressionMethod};
 use crate::file_module::copy::copy_dir_recursive;
 use crate::file_module::error::FileManagerError;
-use crate::file_module::ops::{create_temp_dir_sibling, create_temp_file_sibling};
+use crate::file_module::ops::{
+    create_temp_dir_sibling, create_temp_file_sibling, restore_displaced_after_failed_install,
+};
 use crate::settings::Settings;
 
 const MAX_ARCHIVE_ENTRIES: u64 = 100_000;
@@ -433,10 +435,12 @@ fn replace_staged(staged: &Path, target: &Path) -> Result<(), FileManagerError> 
             let _ = remove_staged(&displaced);
             Ok(())
         }
-        Err(error) => {
-            let _ = fs::rename(&displaced, target);
-            Err(error.into())
-        }
+        Err(error) => Err(restore_displaced_after_failed_install(
+            &displaced,
+            target,
+            "publish staged deployment",
+            error,
+        )),
     }
 }
 
@@ -779,8 +783,8 @@ fn remove_staged(path: &Path) -> Result<(), FileManagerError> {
 mod tests {
     use super::{
         ArchiveLimits, BackupKind, DeploymentManifest, deploy, extract_archive_limited,
-        publish_new, publish_staged, save_compressed_manifest_with_ignores, save_manifest,
-        save_manifest_with_ignores,
+        publish_new, publish_staged, replace_staged, save_compressed_manifest_with_ignores,
+        save_manifest, save_manifest_with_ignores,
     };
     use crate::settings::Settings;
     use crate::test::TestDir;
@@ -797,6 +801,20 @@ mod tests {
     use std::io::{Cursor, Write};
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
+
+    #[test]
+    fn failed_forced_publish_restores_existing_target() {
+        let temp = TestDir::new("deploy-failed-install-restore");
+        let target = temp.path().join("target");
+        let missing_staged = temp.path().join("missing-staged");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("keep.txt"), b"original").unwrap();
+
+        let error = replace_staged(&missing_staged, &target).unwrap_err();
+
+        assert!(matches!(error, crate::file_module::FileManagerError::Io(_)));
+        assert_eq!(fs::read(target.join("keep.txt")).unwrap(), b"original");
+    }
 
     fn gzip_archive(entries: &[(&str, &[u8])]) -> Vec<u8> {
         let encoder = GzEncoder::new(Vec::new(), Compression::default());

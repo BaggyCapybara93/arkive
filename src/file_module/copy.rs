@@ -23,7 +23,9 @@ use crate::file_module::add_timestamp_to_path;
 use crate::file_module::error::FileManagerError;
 use crate::file_module::ignore::{IgnoreMatcher, IgnoreStats};
 use crate::file_module::manager::FileManager;
-use crate::file_module::ops::{create_temp_dir_sibling, create_temp_file_sibling};
+use crate::file_module::ops::{
+    create_temp_dir_sibling, create_temp_file_sibling, restore_displaced_after_failed_install,
+};
 use crate::file_validation::handlers::{ensure_not_nested, valid_directory, validate_hash};
 
 /// Count every file and directory entry in a tree, so we can set an accurate
@@ -414,10 +416,12 @@ fn install_staged_directory(
             let _ = fs::remove_dir_all(displaced);
             Ok(())
         }
-        Err(error) => {
-            let _ = fs::rename(&displaced, destination);
-            Err(error.into())
-        }
+        Err(error) => Err(restore_displaced_after_failed_install(
+            &displaced,
+            destination,
+            "install staged directory",
+            error,
+        )),
     }
 }
 
@@ -545,10 +549,29 @@ impl<'a> FileManager<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{FileManager, copy_dir_recursive, copy_dir_recursive_filtered};
+    use super::{
+        FileManager, copy_dir_recursive, copy_dir_recursive_filtered, install_staged_directory,
+    };
     use crate::file_module::ignore::{IgnoreMatcher, IgnoreOptions, IgnoreStats};
     use crate::settings::Settings;
     use crate::test::TestDir;
+
+    #[test]
+    fn failed_staged_install_restores_existing_destination() {
+        let temp = TestDir::new("copy-failed-install-restore");
+        let destination = temp.path().join("destination");
+        let missing_staging = temp.path().join("missing-staging");
+        std::fs::create_dir(&destination).unwrap();
+        std::fs::write(destination.join("keep.txt"), b"original").unwrap();
+
+        let error = install_staged_directory(&missing_staging, &destination, true).unwrap_err();
+
+        assert!(matches!(error, crate::file_module::FileManagerError::Io(_)));
+        assert_eq!(
+            std::fs::read(destination.join("keep.txt")).unwrap(),
+            b"original"
+        );
+    }
 
     #[test]
     fn copy_file_preserves_contents() {

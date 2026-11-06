@@ -15,6 +15,18 @@ pub enum FileManagerError {
         source: std::io::Error,
     },
 
+    #[error(
+        "Failed to {operation} at {path:?}: {original}; rollback also failed: {rollback}. Check the displaced destination at {displaced:?}"
+    )]
+    RollbackFailed {
+        operation: &'static str,
+        path: PathBuf,
+        displaced: PathBuf,
+        #[source]
+        original: std::io::Error,
+        rollback: std::io::Error,
+    },
+
     #[error("Hash mismatch after copy — file may be corrupted")]
     HashMismatch,
 
