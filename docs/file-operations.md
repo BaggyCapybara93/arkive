@@ -12,7 +12,8 @@ arkive move [--recursive] <SRC> <DEST>
 Move a file or directory. Directories require `--recursive`; recursive moves
 copy the tree first and then remove the source. If ignore rules exclude part
 of a recursive move, only successfully copied items are removed from the
-source.
+source. A non-recursive move fails if its destination already exists, including
+when moving a file into a directory that already contains that filename.
 
 ```bash
 arkive move file1.txt backup/

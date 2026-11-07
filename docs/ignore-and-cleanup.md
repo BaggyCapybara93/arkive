@@ -56,6 +56,10 @@ arkive rename file1.txt file2.txt
 arkive rename myproject/ myproject-v2/
 ```
 
+Renaming fails if the resolved target already exists. When the destination is
+a directory, the target is the file or folder with the source's name inside it.
+The source and existing target are preserved.
+
 Bulk rename matching entries with a template:
 
 ```bash
