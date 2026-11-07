@@ -91,7 +91,11 @@ arkive remove downloads/ --pattern '*.tmp' --trash
 ## Trash
 
 Trash items are stored in `~/arkive_trash` when `HOME` is available, or
-`./arkive_trash` otherwise. Name collisions receive a numeric suffix.
+`./arkive_trash` otherwise. Name collisions receive a numeric suffix. When the
+trash is on another filesystem, Arkive copies and verifies regular files or
+directories there before removing the originals. If the copy or verification
+fails, the originals remain in place. Cross-filesystem trash moves reject
+symlinks and special files; copied items may have new timestamps.
 
 ```bash
 arkive list-trash

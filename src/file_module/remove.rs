@@ -74,7 +74,7 @@ impl<'a> FileManager<'a> {
 
             if options.trash && self.settings.enable_trash {
                 let target_path = Self::unique_trash_path(file_path)?;
-                fs::rename(file_path, &target_path)?;
+                super::trash::move_to_trash(file_path, &target_path)?;
             } else {
                 // Permanently delete
                 fs::remove_file(file_path)?;
