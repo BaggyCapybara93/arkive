@@ -21,8 +21,11 @@ fn main() -> Result<(), AppError> {
     let dry_run_requested = cli.dry_run;
 
     let config_manager = ConfigManager::new()?;
-    let is_config_command = matches!(cli.command, crate::cli::Command::Config { .. });
-    if !cli.dry_run && !is_config_command {
+    let is_read_only_command = matches!(
+        cli.command,
+        crate::cli::Command::Config { .. } | crate::cli::Command::Batch { plan: true, .. }
+    );
+    if !cli.dry_run && !is_read_only_command {
         config_manager.create_default_config()?;
     }
 

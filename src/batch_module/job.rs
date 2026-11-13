@@ -100,6 +100,14 @@ impl Job {
         if let Some(cleanup) = &self.cleanup {
             cleanup.options()?;
         }
+        if matches!(&self.work_type, WorkType::Compress)
+            && matches!(&self.archive_format, Some(BatchArchiveFormat::Zip))
+            && self.compression_method.is_some()
+        {
+            return Err(FileManagerError::InvalidInput(
+                "compression_method applies only to tar batch archives".into(),
+            ));
+        }
         Ok(())
     }
 

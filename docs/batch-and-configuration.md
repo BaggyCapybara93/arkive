@@ -4,6 +4,7 @@
 
 ```text
 arkive batch <FILE>
+arkive batch <FILE> --plan
 ```
 
 Batch files may contain an object with an `operations` array or a top-level
@@ -69,8 +70,18 @@ Batch jobs may run in parallel, so avoid operations that modify overlapping
 paths. If a job fails, other queued jobs may still finish. The command exits
 with an error identifying the lowest-numbered failed job and its cause.
 
+Before submitting jobs, Arkive validates the batch and prints a preflight plan
+with resolved source paths, destination base paths, and cleanup actions. A
+timestamped destination's exact name is chosen at run time. The plan flags
+overlapping paths because those jobs wait on path locks and their execution
+order is not guaranteed.
+Use `--plan` to inspect this information without running jobs or creating a
+configuration file. The plan does not scan file contents or guarantee that
+paths will remain unchanged before execution.
+
 ```bash
 arkive batch batch.json
+arkive batch batch.json --plan
 ```
 
 ## Configuration

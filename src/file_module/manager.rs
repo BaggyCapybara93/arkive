@@ -113,7 +113,7 @@ impl<'a> FileManager<'a> {
     }
 }
 
-fn normalize_lock_path(path: &Path) -> PathBuf {
+pub(crate) fn normalize_lock_path(path: &Path) -> PathBuf {
     if let Ok(canonical) = std::fs::canonicalize(path) {
         return canonical;
     }
@@ -152,7 +152,7 @@ fn normalize_lock_path(path: &Path) -> PathBuf {
     normalized
 }
 
-fn paths_overlap(left: &Path, right: &Path) -> bool {
+pub(crate) fn paths_overlap(left: &Path, right: &Path) -> bool {
     left.starts_with(right) || right.starts_with(left)
 }
 

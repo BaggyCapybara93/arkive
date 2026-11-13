@@ -194,6 +194,9 @@ pub enum Command {
     Batch {
         /// Path to batch file
         file: PathBuf,
+        /// Print the preflight plan without running any jobs
+        #[arg(long)]
+        plan: bool,
     },
 
     /// Empty the arkive trash directory
@@ -624,7 +627,7 @@ fn handle_rename(
     Ok(())
 }
 
-fn handle_batch(file: &Path, settings: &Settings) -> Result<(), AppError> {
+fn handle_batch(file: &Path, plan_only: bool, settings: &Settings) -> Result<(), AppError> {
     let file_str = file.to_str().ok_or_else(|| {
         AppError::InvalidInput(format!(
             "Batch file path contains invalid UTF‑8: {:?}",
@@ -633,7 +636,11 @@ fn handle_batch(file: &Path, settings: &Settings) -> Result<(), AppError> {
     })?;
 
     let batch_handler = BatchHandler::from_file(file_str, settings)?;
-    batch_handler.run()?;
+    if plan_only {
+        batch_handler.plan()?.print();
+    } else {
+        batch_handler.run()?;
+    }
     Ok(())
 }
 
@@ -924,7 +931,7 @@ pub fn cli_handler(
             recursive,
             settings,
         ),
-        Command::Batch { file } => handle_batch(&file, settings),
+        Command::Batch { file, plan } => handle_batch(&file, plan, settings),
         Command::EmptyTrash => handle_empty_trash(settings),
         Command::ListTrash => handle_list_trash(settings),
         Command::Deduplicate { path, trash } => handle_deduplicate(&path, trash, settings),

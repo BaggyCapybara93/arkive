@@ -2,6 +2,7 @@ pub mod error;
 pub mod file;
 pub mod handlers;
 pub mod job;
+pub mod plan;
 pub mod thread_pool;
 
 pub use error::BatchError;

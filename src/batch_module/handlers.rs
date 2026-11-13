@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use crate::batch_module::file::BatchFile;
 use crate::batch_module::job::BatchCompressionMethod;
+use crate::batch_module::plan::BatchPlan;
 use crate::batch_module::thread_pool::ThreadPool;
 use crate::batch_module::{BatchError, Job};
 
@@ -43,15 +44,7 @@ impl BatchHandler {
         let batch_content = fs::read_to_string(path)?;
         // Try parsing as BatchFile first (new format with "operations" key)
         if let Ok(batch) = serde_json::from_str::<BatchFile>(&batch_content) {
-            let commands = batch
-                .operations
-                .into_iter()
-                .map(|mut job| {
-                    job.settings = Some(Arc::new(*settings));
-                    job
-                })
-                .collect();
-            return Ok(BatchHandler { commands });
+            return Ok(BatchHandler::new(batch.operations, settings));
         }
         // Fall back to plain Vec<Job> (old format)
         let commands: Vec<Job> = serde_json::from_str(&batch_content)?;
@@ -59,12 +52,8 @@ impl BatchHandler {
     }
 
     pub fn run(&self) -> Result<(), BatchError> {
-        for (index, job) in self.commands.iter().enumerate() {
-            job.validate().map_err(|source| BatchError::Job {
-                index: index + 1,
-                source,
-            })?;
-        }
+        let plan = self.plan()?;
+        plan.print();
 
         let threads = std::thread::available_parallelism()
             .map(|n| n.get())
@@ -102,12 +91,6 @@ impl BatchHandler {
 
         let mut submission_error = None;
         for (index, job) in self.commands.iter().enumerate() {
-            println!(
-                "Running job {}: {:?} -> {:?}",
-                index + 1,
-                job.work_type,
-                job.destination
-            );
             if let Err(error) = pool.add_job(index + 1, job.clone()) {
                 submission_error = Some(error);
                 break;
@@ -131,12 +114,18 @@ impl BatchHandler {
 
         result
     }
+
+    pub fn plan(&self) -> Result<BatchPlan, BatchError> {
+        BatchPlan::build(&self.commands)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::BatchHandler;
-    use crate::batch_module::job::{BatchCleanup, WorkType};
+    use crate::batch_module::job::{
+        BatchArchiveFormat, BatchCleanup, BatchCompressionMethod, WorkType,
+    };
     use crate::batch_module::{BatchError, Job};
     use crate::file_module::FileManagerError;
     use crate::settings::Settings;
@@ -177,6 +166,25 @@ mod tests {
                 .downcast_ref::<FileManagerError>()
                 .is_some()
         );
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn plan_rejects_invalid_later_job_before_any_copy() {
+        let temp = TestDir::new("batch-plan-validation");
+        let source = temp.path().join("source.txt");
+        let destination = temp.path().join("destination.txt");
+        std::fs::write(&source, b"source").unwrap();
+        let first = copy_job(&source, &destination);
+        let mut second = copy_job(&source, &temp.path().join("archive.zip"));
+        second.work_type = WorkType::Compress;
+        second.archive_format = Some(BatchArchiveFormat::Zip);
+        second.compression_method = Some(BatchCompressionMethod::Gzip);
+        let handler = BatchHandler::new(vec![first, second], &Settings::default());
+
+        let error = handler.run().unwrap_err();
+
+        assert!(matches!(error, BatchError::Job { index: 2, .. }));
         assert!(!destination.exists());
     }
 
