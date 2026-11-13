@@ -99,13 +99,12 @@ impl ThreadPool {
 
         let mut first_failure: Option<(usize, FileManagerError)> = None;
         while let Ok(result) = self.result_receiver.recv() {
-            if let ThreadResult::Err { index, source } = result {
-                if first_failure
+            if let ThreadResult::Err { index, source } = result
+                && first_failure
                     .as_ref()
                     .is_none_or(|(first_index, _)| index < *first_index)
-                {
-                    first_failure = Some((index, source));
-                }
+            {
+                first_failure = Some((index, source));
             }
         }
 
