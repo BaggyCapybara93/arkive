@@ -3,6 +3,7 @@ use std::path::Path;
 
 use crate::file_module::FileManager;
 use crate::file_module::error::FileManagerError;
+use crate::file_module::ops::{ensure_destination_absent, move_no_replace};
 use crate::file_validation::handlers::valid_directory;
 
 impl<'a> FileManager<'a> {
@@ -12,16 +13,17 @@ impl<'a> FileManager<'a> {
         let src = self.file_path.as_path();
         let dst = self.file_dest.as_path();
 
+        let dest_path = Self::canonical_destination_file(src, dst)?;
         if self.settings.dry_run {
+            ensure_destination_absent(&dest_path)?;
             if self.settings.verbose {
-                println!("[DRY-RUN] Would rename {:?} to {:?}", src, dst);
+                println!("[DRY-RUN] Would rename {:?} to {:?}", src, dest_path);
             }
             return Ok(());
         }
 
         let source_metadata_keys = self.metadata_keys_for_path(src)?;
-        let dest_path = Self::canonical_destination_file(src, dst)?;
-        std::fs::rename(src, &dest_path)?;
+        move_no_replace(src, &dest_path)?;
 
         if self.settings.enable_metadata {
             let manager = self.metadata_manager_for_destination(&dest_path)?;
@@ -89,21 +91,15 @@ impl<'a> FileManager<'a> {
             }
 
             if self.settings.dry_run {
+                ensure_destination_absent(&new_path)?;
                 if self.settings.verbose {
                     println!("[DRY-RUN] Would rename {:?} to {:?}", path, new_path);
                 }
                 continue;
             }
 
-            if new_path.exists() {
-                return Err(FileManagerError::InvalidInput(format!(
-                    "Target already exists: {:?}",
-                    new_path
-                )));
-            }
-
             let source_metadata_keys = self.metadata_keys_for_path(&path)?;
-            fs::rename(&path, &new_path)?;
+            move_no_replace(&path, &new_path)?;
 
             if self.settings.enable_metadata {
                 let manager = self.metadata_manager_for_destination(&new_path)?;
@@ -164,9 +160,8 @@ impl<'a> FileManager<'a> {
 
     fn rename_glob_to_regex(pattern: &str) -> String {
         let mut regex = String::from("^");
-        let mut chars = pattern.chars().peekable();
 
-        while let Some(ch) = chars.next() {
+        for ch in pattern.chars() {
             match ch {
                 '*' => regex.push_str(".*"),
                 '?' => regex.push('.'),
@@ -231,6 +226,40 @@ mod tests {
     fn rename_templates_preserve_extension_when_missing() {
         let renamed = FileManager::build_renamed_name("notes.txt", "prefix-{name}").unwrap();
         assert_eq!(renamed, "prefix-notes.txt");
+    }
+
+    #[test]
+    fn single_rename_refuses_to_replace_an_existing_file() {
+        let temp = TestDir::new("rename-existing-file");
+        let source = temp.path().join("source.txt");
+        let destination = temp.path().join("destination.txt");
+        std::fs::write(&source, b"source").unwrap();
+        std::fs::write(&destination, b"keep").unwrap();
+
+        let settings = Settings::default();
+        FileManager::new(&source, &destination, &settings)
+            .rename_path()
+            .unwrap_err();
+
+        assert_eq!(std::fs::read(source).unwrap(), b"source");
+        assert_eq!(std::fs::read(destination).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn bulk_rename_refuses_to_replace_an_existing_file() {
+        let temp = TestDir::new("bulk-rename-existing-file");
+        let source = temp.path().join("source.txt");
+        let destination = temp.path().join("renamed-source.txt");
+        std::fs::write(&source, b"source").unwrap();
+        std::fs::write(&destination, b"keep").unwrap();
+
+        let settings = Settings::default();
+        FileManager::new(temp.path(), "", &settings)
+            .rename_matching_items(Some("source.txt"), None, false, "renamed-{name}")
+            .unwrap_err();
+
+        assert_eq!(std::fs::read(source).unwrap(), b"source");
+        assert_eq!(std::fs::read(destination).unwrap(), b"keep");
     }
 
     #[cfg(unix)]

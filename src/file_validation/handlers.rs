@@ -133,26 +133,23 @@ pub fn validate_access_permissions(path: &Path) -> Result<(), FileManagerError> 
     }
 
     // Check write permission (only if file exists)
-    if meta.is_file() {
-        if OpenOptions::new().write(true).open(&canon).is_err() {
-            return Err(FileManagerError::PermissionDenied(format!(
-                "Cannot write to {:?}",
-                canon
-            )));
-        }
+    if meta.is_file() && OpenOptions::new().write(true).open(&canon).is_err() {
+        return Err(FileManagerError::PermissionDenied(format!(
+            "Cannot write to {:?}",
+            canon
+        )));
     }
 
     // Check delete permission (only for files, not directories)
     // This check ensures the parent directory is writable so we can delete the file
-    if meta.is_file() {
-        if let Some(parent) = canon.parent() {
-            if OpenOptions::new().write(true).open(parent).is_err() {
-                return Err(FileManagerError::PermissionDenied(format!(
-                    "Cannot delete {:?} (parent not writable)",
-                    canon
-                )));
-            }
-        }
+    if meta.is_file()
+        && let Some(parent) = canon.parent()
+        && OpenOptions::new().write(true).open(parent).is_err()
+    {
+        return Err(FileManagerError::PermissionDenied(format!(
+            "Cannot delete {:?} (parent not writable)",
+            canon
+        )));
     }
 
     Ok(())
@@ -203,6 +200,9 @@ pub fn validate_compress_path(
     let valid_extensions: &[&str] = match method {
         CompressionMethod::Gzip => &[".tar.gz", ".tgz"],
         CompressionMethod::Zstd => &[".tar.zst", ".tzst"],
+        CompressionMethod::Lz4 => &[".tar.lz4"],
+        CompressionMethod::Xz => &[".tar.xz"],
+        CompressionMethod::Bzip2 => &[".tar.bz2", ".tbz", ".tbz2"],
     };
     let dst_str = dst.to_str().ok_or(FileManagerError::InvalidInput(
         "Destination path is not valid UTF‑8".into(),
@@ -218,9 +218,23 @@ pub fn validate_compress_path(
     Ok(())
 }
 
+/// Validates that a ZIP archive destination uses the portable ZIP extension.
+pub fn validate_zip_path(dst: &Path) -> Result<(), FileManagerError> {
+    let dst_str = dst.to_str().ok_or(FileManagerError::InvalidInput(
+        "Destination path is not valid UTF-8".into(),
+    ))?;
+    if dst_str.to_lowercase().ends_with(".zip") {
+        Ok(())
+    } else {
+        Err(FileManagerError::InvalidInput(format!(
+            "ZIP destinations must use the .zip extension: {dst:?}"
+        )))
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ensure_not_nested, validate_compress_path};
+    use super::{ensure_not_nested, validate_compress_path, validate_zip_path};
     use crate::file_module::compress::CompressionMethod;
     use crate::test::TestDir;
     use std::fs;
@@ -237,6 +251,15 @@ mod tests {
             validate_compress_path(Path::new("backup.tar.zst"), CompressionMethod::Zstd).is_ok()
         );
         assert!(validate_compress_path(Path::new("backup.tzst"), CompressionMethod::Zstd).is_ok());
+        assert!(
+            validate_compress_path(Path::new("backup.tar.lz4"), CompressionMethod::Lz4).is_ok()
+        );
+        assert!(validate_compress_path(Path::new("backup.tar.xz"), CompressionMethod::Xz).is_ok());
+        assert!(
+            validate_compress_path(Path::new("backup.tar.bz2"), CompressionMethod::Bzip2).is_ok()
+        );
+        assert!(validate_compress_path(Path::new("backup.tbz"), CompressionMethod::Bzip2).is_ok());
+        assert!(validate_compress_path(Path::new("backup.tbz2"), CompressionMethod::Bzip2).is_ok());
 
         assert!(
             validate_compress_path(Path::new("backup.tar.zst"), CompressionMethod::Gzip).is_err()
@@ -244,6 +267,23 @@ mod tests {
         assert!(
             validate_compress_path(Path::new("backup.tar.gz"), CompressionMethod::Zstd).is_err()
         );
+        assert!(
+            validate_compress_path(Path::new("backup.tar.zst"), CompressionMethod::Lz4).is_err()
+        );
+        assert!(
+            validate_compress_path(Path::new("backup.tar.xz"), CompressionMethod::Lz4).is_err()
+        );
+        assert!(
+            validate_compress_path(Path::new("backup.tar.bz2"), CompressionMethod::Xz).is_err()
+        );
+    }
+
+    #[test]
+    fn zip_extensions_are_validated_separately_from_tar_codecs() {
+        assert!(validate_zip_path(Path::new("backup.zip")).is_ok());
+        assert!(validate_zip_path(Path::new("backup.ZIP")).is_ok());
+        assert!(validate_zip_path(Path::new("backup.tar.gz")).is_err());
+        assert!(validate_zip_path(Path::new("backup.zipx")).is_err());
     }
 
     #[test]

@@ -1,14 +1,47 @@
-use std::fs;
+use std::collections::HashSet;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
+use bzip2::read::BzDecoder;
 use chrono::{DateTime, Utc};
 use flate2::read::GzDecoder;
+use lz4_flex::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
+use xz2::read::XzDecoder;
+use xz2::stream::Stream as XzStream;
 
-use crate::file_module::compress::CompressionMethod;
+use crate::file_module::compress::{ArchiveFormat, CompressionMethod};
 use crate::file_module::copy::copy_dir_recursive;
 use crate::file_module::error::FileManagerError;
+use crate::file_module::ops::{
+    create_temp_dir_sibling, create_temp_file_sibling, restore_displaced_after_failed_install,
+};
 use crate::settings::Settings;
+
+const MAX_ARCHIVE_ENTRIES: u64 = 100_000;
+const MAX_ARCHIVE_FILE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const MAX_ARCHIVE_TOTAL_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+const MAX_ARCHIVE_PATH_BYTES: usize = 4 * 1024;
+const MAX_ARCHIVE_PATH_DEPTH: usize = 128;
+const MAX_XZ_DECODER_MEMORY_BYTES: u64 = 256 * 1024 * 1024;
+
+#[derive(Clone, Copy)]
+struct ArchiveLimits {
+    entries: u64,
+    file_bytes: u64,
+    total_bytes: u64,
+    path_bytes: usize,
+    path_depth: usize,
+}
+
+const ARCHIVE_LIMITS: ArchiveLimits = ArchiveLimits {
+    entries: MAX_ARCHIVE_ENTRIES,
+    file_bytes: MAX_ARCHIVE_FILE_BYTES,
+    total_bytes: MAX_ARCHIVE_TOTAL_BYTES,
+    path_bytes: MAX_ARCHIVE_PATH_BYTES,
+    path_depth: MAX_ARCHIVE_PATH_DEPTH,
+};
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -25,6 +58,8 @@ pub struct DeploymentManifest {
     original_path: PathBuf,
     backup_path: PathBuf,
     compression_method: Option<CompressionMethod>,
+    #[serde(default)]
+    archive_format: ArchiveFormat,
     #[serde(default)]
     ignore_rules: Vec<String>,
     #[serde(default)]
@@ -60,6 +95,44 @@ pub fn save_manifest_with_ignores(
     ignore_rules: &[String],
     partial_move: bool,
 ) -> Result<PathBuf, FileManagerError> {
+    save_manifest_with_format(
+        source,
+        backup,
+        kind,
+        compression_method,
+        ArchiveFormat::Tar,
+        ignore_rules,
+        partial_move,
+    )
+}
+
+pub fn save_compressed_manifest_with_ignores(
+    source: &Path,
+    backup: &Path,
+    compression_method: Option<CompressionMethod>,
+    archive_format: ArchiveFormat,
+    ignore_rules: &[String],
+) -> Result<PathBuf, FileManagerError> {
+    save_manifest_with_format(
+        source,
+        backup,
+        BackupKind::Compress,
+        compression_method,
+        archive_format,
+        ignore_rules,
+        false,
+    )
+}
+
+fn save_manifest_with_format(
+    source: &Path,
+    backup: &Path,
+    kind: BackupKind,
+    compression_method: Option<CompressionMethod>,
+    archive_format: ArchiveFormat,
+    ignore_rules: &[String],
+    partial_move: bool,
+) -> Result<PathBuf, FileManagerError> {
     let original_path = source.to_path_buf();
     let backup_path = fs::canonicalize(backup)?;
     let manifest = DeploymentManifest {
@@ -68,6 +141,7 @@ pub fn save_manifest_with_ignores(
         original_path,
         backup_path,
         compression_method,
+        archive_format,
         ignore_rules: ignore_rules.to_vec(),
         partial_move,
         created_at: Utc::now(),
@@ -140,18 +214,33 @@ pub fn deploy(
 
     match manifest.kind {
         BackupKind::Copy | BackupKind::Move => {
-            if force && target_is_occupied && !can_merge_partial_move {
-                remove_existing(&target)?;
+            if force && target_is_occupied && can_merge_partial_move {
+                // A partial move intentionally merges the backed-up subset into
+                // the existing source tree. `copy_dir_recursive` stages the
+                // complete merged result before replacing the destination.
+                restore_copy(backup, &target)?;
+            } else {
+                let staged = stage_copy(backup, &target)?;
+                let result = publish_staged(&staged, &target, force);
+                if result.is_err() {
+                    let _ = remove_staged(&staged);
+                }
+                result?;
             }
-            restore_copy(backup, &target)?
         }
-        BackupKind::Compress => restore_archive(
-            backup,
-            &target,
-            manifest.compression_method.ok_or_else(|| {
-                FileManagerError::InvalidInput("Compression method missing from metadata".into())
-            })?,
-        )?,
+        BackupKind::Compress => match manifest.archive_format {
+            ArchiveFormat::Tar => restore_archive(
+                backup,
+                &target,
+                manifest.compression_method.ok_or_else(|| {
+                    FileManagerError::InvalidInput(
+                        "Compression method missing from metadata".into(),
+                    )
+                })?,
+                force,
+            )?,
+            ArchiveFormat::Zip => restore_zip_archive(backup, &target, force)?,
+        },
     }
 
     if settings.verbose {
@@ -182,10 +271,276 @@ fn restore_copy(backup: &Path, target: &Path) -> Result<(), FileManagerError> {
     }
 }
 
+/// Build a complete deployment beside its final destination before touching
+/// that destination. This keeps failed reads and copies from damaging a
+/// previous restore.
+fn stage_copy(backup: &Path, target: &Path) -> Result<PathBuf, FileManagerError> {
+    let metadata = fs::symlink_metadata(backup)?;
+    if metadata.file_type().is_symlink() {
+        return Err(FileManagerError::InvalidInput(format!(
+            "Backup must not be a symlink: {backup:?}"
+        )));
+    }
+
+    if metadata.is_dir() {
+        let staged = create_temp_dir_sibling(target)?;
+        let result = copy_dir_recursive(backup, &staged, None);
+        if result.is_err() {
+            let _ = fs::remove_dir_all(&staged);
+        }
+        result.map(|()| staged)
+    } else if metadata.is_file() {
+        let staged = create_temp_file_sibling(target)?;
+        let result = fs::copy(backup, &staged).map(|_| ());
+        if result.is_err() {
+            let _ = fs::remove_file(&staged);
+        }
+        result.map_err(Into::into).map(|()| staged)
+    } else {
+        Err(FileManagerError::InvalidInput(format!(
+            "Backup does not exist or is not a regular file/directory: {backup:?}"
+        )))
+    }
+}
+
+/// Publish a staged file or directory. Without `--force`, every creation is
+/// no-clobber, including a destination that appears after the initial CLI
+/// validation. With `--force`, keep the displaced entry until the staged
+/// replacement is installed so a failed final rename can be rolled back.
+fn publish_staged(staged: &Path, target: &Path, force: bool) -> Result<(), FileManagerError> {
+    if target_is_occupied(target)? {
+        if !force {
+            return Err(FileManagerError::InvalidInput(format!(
+                "Restore destination {target:?} appeared while preparing deployment; refusing to overwrite it"
+            )));
+        }
+        return replace_staged(staged, target);
+    }
+
+    if force {
+        // `--force` explicitly authorizes replacing a target that appears
+        // between this check and the final rename.
+        return match fs::rename(staged, target) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                replace_staged(staged, target)
+            }
+            Err(error) => Err(error.into()),
+        };
+    }
+
+    publish_new(staged, target)
+}
+
+fn publish_new(staged: &Path, target: &Path) -> Result<(), FileManagerError> {
+    let metadata = fs::symlink_metadata(staged)?;
+    if metadata.file_type().is_symlink() || (!metadata.is_file() && !metadata.is_dir()) {
+        return Err(FileManagerError::InvalidInput(format!(
+            "Staged deployment is not a regular file or directory: {staged:?}"
+        )));
+    }
+
+    if metadata.is_file() {
+        install_file_no_clobber(staged, target)
+    } else {
+        // `create_dir` is an exclusive reservation: a late creator cannot be
+        // overwritten by the directory deployment.
+        fs::create_dir(target)?;
+        let result = move_directory_contents_no_clobber(staged, target);
+        if result.is_ok() {
+            fs::remove_dir(staged)?;
+        } else {
+            // This directory was exclusively created by this operation, so it
+            // is safe to clean up a partial deployment on failure.
+            let _ = fs::remove_dir_all(target);
+        }
+        result
+    }
+}
+
+fn install_file_no_clobber(staged: &Path, target: &Path) -> Result<(), FileManagerError> {
+    match fs::hard_link(staged, target) {
+        Ok(()) => {
+            fs::remove_file(staged)?;
+            Ok(())
+        }
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            Err(FileManagerError::InvalidInput(format!(
+                "Restore destination {target:?} appeared while preparing deployment; refusing to overwrite it"
+            )))
+        }
+        // SMB/NFS and some Windows filesystems do not permit hard links. An
+        // exclusive create retains the no-clobber guarantee on those shares.
+        Err(_) => copy_file_no_clobber(staged, target),
+    }
+}
+
+fn copy_file_no_clobber(source: &Path, target: &Path) -> Result<(), FileManagerError> {
+    let mut output = match OpenOptions::new().write(true).create_new(true).open(target) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            return Err(FileManagerError::InvalidInput(format!(
+                "Restore destination {target:?} appeared while preparing deployment; refusing to overwrite it"
+            )));
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let result: Result<(), io::Error> = (|| {
+        let mut input = fs::File::open(source)?;
+        io::copy(&mut input, &mut output)?;
+        output.sync_all()?;
+        Ok(())
+    })();
+    drop(output);
+    if result.is_ok() {
+        fs::remove_file(source)?;
+    } else {
+        let _ = fs::remove_file(target);
+    }
+    result.map_err(Into::into)
+}
+
+fn move_directory_contents_no_clobber(
+    source: &Path,
+    target: &Path,
+) -> Result<(), FileManagerError> {
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        let metadata = fs::symlink_metadata(&source_path)?;
+        if metadata.file_type().is_symlink() || (!metadata.is_file() && !metadata.is_dir()) {
+            return Err(FileManagerError::InvalidInput(format!(
+                "Staged deployment contains an unsupported entry: {source_path:?}"
+            )));
+        }
+        if metadata.is_dir() {
+            fs::create_dir(&target_path)?;
+            move_directory_contents_no_clobber(&source_path, &target_path)?;
+            fs::remove_dir(&source_path)?;
+        } else {
+            install_file_no_clobber(&source_path, &target_path)?;
+        }
+    }
+    Ok(())
+}
+
+fn replace_staged(staged: &Path, target: &Path) -> Result<(), FileManagerError> {
+    let displaced = create_temp_dir_sibling(target)?;
+    fs::remove_dir(&displaced)?;
+    fs::rename(target, &displaced)?;
+
+    match fs::rename(staged, target) {
+        Ok(()) => {
+            let _ = remove_staged(&displaced);
+            Ok(())
+        }
+        Err(error) => Err(restore_displaced_after_failed_install(
+            &displaced,
+            target,
+            "publish staged deployment",
+            error,
+        )),
+    }
+}
+
+/// Extract an archive entry-by-entry so its advertised expansion cannot consume
+/// unbounded storage before deployment reaches its publish step. The tar crate
+/// still owns traversal and link-target validation during `unpack_in`.
+fn extract_archive_limited<R: Read>(
+    reader: R,
+    staging: &Path,
+    limits: ArchiveLimits,
+) -> Result<(), FileManagerError> {
+    let mut archive = tar::Archive::new(reader);
+    let mut entries = 0u64;
+    let mut total_bytes = 0u64;
+
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        entries = entries
+            .checked_add(1)
+            .ok_or_else(|| FileManagerError::InvalidInput("Archive entry count overflow".into()))?;
+        if entries > limits.entries {
+            return Err(FileManagerError::InvalidInput(format!(
+                "Archive exceeds the {} entry limit",
+                limits.entries
+            )));
+        }
+
+        let path = entry.path()?.into_owned();
+        validate_archive_path(&path, limits)?;
+        if entry.header().entry_type().is_symlink() {
+            return Err(FileManagerError::InvalidInput(format!(
+                "Tar archive entry is a symbolic link: {path:?}"
+            )));
+        }
+        let size = entry.size();
+        if size > limits.file_bytes {
+            return Err(FileManagerError::InvalidInput(format!(
+                "Archive entry {path:?} exceeds the {} byte per-file limit",
+                limits.file_bytes
+            )));
+        }
+        total_bytes = total_bytes.checked_add(size).ok_or_else(|| {
+            FileManagerError::InvalidInput("Archive expanded byte total overflow".into())
+        })?;
+        if total_bytes > limits.total_bytes {
+            return Err(FileManagerError::InvalidInput(format!(
+                "Archive exceeds the {} byte expanded-size limit",
+                limits.total_bytes
+            )));
+        }
+
+        // Restores do not need archive ownership, mode, or timestamp metadata.
+        entry.set_preserve_permissions(false);
+        entry.set_preserve_mtime(false);
+        entry.unpack_in(staging)?;
+    }
+    Ok(())
+}
+
+fn validate_archive_path(path: &Path, limits: ArchiveLimits) -> Result<(), FileManagerError> {
+    let path_bytes = path.as_os_str().to_string_lossy().len();
+    if path_bytes == 0 || path_bytes > limits.path_bytes {
+        return Err(FileManagerError::InvalidInput(format!(
+            "Archive path {path:?} is empty or exceeds the {} byte limit",
+            limits.path_bytes
+        )));
+    }
+
+    let mut depth = 0usize;
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(_) => {
+                depth = depth.checked_add(1).ok_or_else(|| {
+                    FileManagerError::InvalidInput("Archive path depth overflow".into())
+                })?;
+            }
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => {
+                return Err(FileManagerError::InvalidInput(format!(
+                    "Archive path is not a relative descendant: {path:?}"
+                )));
+            }
+        }
+    }
+    if depth > limits.path_depth {
+        return Err(FileManagerError::InvalidInput(format!(
+            "Archive path {path:?} exceeds the {} component depth limit",
+            limits.path_depth
+        )));
+    }
+    Ok(())
+}
+
 fn restore_archive(
     backup: &Path,
     target: &Path,
     method: CompressionMethod,
+    force: bool,
 ) -> Result<(), FileManagerError> {
     let parent = target.parent().unwrap_or_else(|| Path::new("."));
     let staging = parent.join(format!(
@@ -198,10 +553,32 @@ fn restore_archive(
     let result = (|| {
         let file = fs::File::open(backup)?;
         match method {
-            CompressionMethod::Gzip => tar::Archive::new(GzDecoder::new(file)).unpack(&staging)?,
+            CompressionMethod::Gzip => {
+                extract_archive_limited(GzDecoder::new(file), &staging, ARCHIVE_LIMITS)?
+            }
             CompressionMethod::Zstd => {
                 let decoder = zstd::Decoder::new(file)?;
-                tar::Archive::new(decoder).unpack(&staging)?;
+                extract_archive_limited(decoder, &staging, ARCHIVE_LIMITS)?;
+            }
+            CompressionMethod::Lz4 => {
+                extract_archive_limited(FrameDecoder::new(file), &staging, ARCHIVE_LIMITS)?;
+            }
+            CompressionMethod::Xz => {
+                let stream = XzStream::new_stream_decoder(MAX_XZ_DECODER_MEMORY_BYTES, 0).map_err(
+                    |error| {
+                        FileManagerError::InvalidInput(format!(
+                            "Could not initialize memory-limited XZ decoder: {error}"
+                        ))
+                    },
+                )?;
+                extract_archive_limited(
+                    XzDecoder::new_stream(file, stream),
+                    &staging,
+                    ARCHIVE_LIMITS,
+                )?;
+            }
+            CompressionMethod::Bzip2 => {
+                extract_archive_limited(BzDecoder::new(file), &staging, ARCHIVE_LIMITS)?;
             }
         }
 
@@ -217,19 +594,182 @@ fn restore_archive(
             ));
         }
         // Do not replace an existing deployment until the archive has been
-        // opened and extracted successfully.
-        if target.exists() {
-            remove_existing(target)?;
-        }
-        fs::rename(root, target)?;
-        Ok(())
+        // opened and extracted successfully. `publish_staged` also refuses a
+        // target that appeared during extraction unless --force was supplied.
+        publish_staged(&root, target, force)
     })();
 
     let _ = fs::remove_dir_all(&staging);
     result
 }
 
-fn remove_existing(path: &Path) -> Result<(), FileManagerError> {
+fn zip_error(error: zip::result::ZipError) -> FileManagerError {
+    FileManagerError::InvalidInput(format!("ZIP archive error: {error}"))
+}
+
+fn extract_zip_limited(
+    archive: &mut zip::ZipArchive<fs::File>,
+    staging: &Path,
+    limits: ArchiveLimits,
+) -> Result<(), FileManagerError> {
+    let entries = u64::try_from(archive.len())
+        .map_err(|_| FileManagerError::InvalidInput("ZIP entry count overflow".into()))?;
+    if entries > limits.entries {
+        return Err(FileManagerError::InvalidInput(format!(
+            "ZIP archive exceeds the {} entry limit",
+            limits.entries
+        )));
+    }
+    if archive.has_overlapping_files().map_err(zip_error)? {
+        return Err(FileManagerError::InvalidInput(
+            "ZIP archive contains overlapping compressed entries".into(),
+        ));
+    }
+    if let Some(total) = archive.decompressed_size()
+        && total > u128::from(limits.total_bytes)
+    {
+        return Err(FileManagerError::InvalidInput(format!(
+            "ZIP archive exceeds the {} byte expanded-size limit",
+            limits.total_bytes
+        )));
+    }
+
+    let mut total_bytes = 0u64;
+    let mut paths = HashSet::new();
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(zip_error)?;
+        if entry.encrypted() {
+            return Err(FileManagerError::InvalidInput(
+                "Encrypted ZIP entries are not supported".into(),
+            ));
+        }
+        match entry.compression() {
+            zip::CompressionMethod::Stored | zip::CompressionMethod::Deflated => {}
+            method => {
+                return Err(FileManagerError::InvalidInput(format!(
+                    "Unsupported ZIP compression method: {method:?}"
+                )));
+            }
+        }
+        if entry.is_symlink() {
+            return Err(FileManagerError::InvalidInput(format!(
+                "ZIP archive entry is a symbolic link: {:?}",
+                entry.name()
+            )));
+        }
+        if !entry.is_dir() && !entry.is_file() {
+            return Err(FileManagerError::InvalidInput(format!(
+                "ZIP archive entry is not a regular file or directory: {:?}",
+                entry.name()
+            )));
+        }
+        if entry.name_raw().len() > limits.path_bytes {
+            return Err(FileManagerError::InvalidInput(format!(
+                "ZIP archive path exceeds the {} byte limit",
+                limits.path_bytes
+            )));
+        }
+        if entry.name().contains('\\') {
+            return Err(FileManagerError::InvalidInput(format!(
+                "ZIP archive path must use forward slashes: {:?}",
+                entry.name()
+            )));
+        }
+
+        let path = entry.enclosed_name().ok_or_else(|| {
+            FileManagerError::InvalidInput(format!(
+                "ZIP archive entry has an unsafe path: {:?}",
+                entry.name()
+            ))
+        })?;
+        validate_archive_path(&path, limits)?;
+        if !paths.insert(path.clone()) {
+            return Err(FileManagerError::InvalidInput(format!(
+                "ZIP archive contains a duplicate entry path: {path:?}"
+            )));
+        }
+
+        let size = entry.size();
+        if size > limits.file_bytes {
+            return Err(FileManagerError::InvalidInput(format!(
+                "ZIP archive entry {path:?} exceeds the {} byte per-file limit",
+                limits.file_bytes
+            )));
+        }
+        total_bytes = total_bytes.checked_add(size).ok_or_else(|| {
+            FileManagerError::InvalidInput("ZIP expanded byte total overflow".into())
+        })?;
+        if total_bytes > limits.total_bytes {
+            return Err(FileManagerError::InvalidInput(format!(
+                "ZIP archive exceeds the {} byte expanded-size limit",
+                limits.total_bytes
+            )));
+        }
+
+        let output = staging.join(&path);
+        if entry.is_dir() {
+            if size != 0 {
+                return Err(FileManagerError::InvalidInput(format!(
+                    "ZIP directory entry has unexpected data: {path:?}"
+                )));
+            }
+            fs::create_dir_all(&output)?;
+            continue;
+        }
+
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut output_file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&output)?;
+        let copied = io::copy(
+            &mut entry.by_ref().take(size.saturating_add(1)),
+            &mut output_file,
+        )?;
+        if copied != size {
+            return Err(FileManagerError::InvalidInput(format!(
+                "ZIP archive entry size does not match its data: {path:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn restore_zip_archive(backup: &Path, target: &Path, force: bool) -> Result<(), FileManagerError> {
+    let parent = target.parent().unwrap_or_else(|| Path::new("."));
+    let staging = parent.join(format!(
+        ".arkive-deploy-{}-{}",
+        std::process::id(),
+        Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    ));
+    fs::create_dir(&staging)?;
+
+    let result = (|| {
+        let file = fs::File::open(backup)?;
+        let mut archive = zip::ZipArchive::new(file).map_err(zip_error)?;
+        extract_zip_limited(&mut archive, &staging, ARCHIVE_LIMITS)?;
+
+        let mut entries = fs::read_dir(&staging)?;
+        let root = entries
+            .next()
+            .transpose()?
+            .ok_or_else(|| FileManagerError::InvalidInput("Archive is empty".into()))?
+            .path();
+        if entries.next().is_some() {
+            return Err(FileManagerError::InvalidInput(
+                "Archive metadata expected exactly one top-level item".into(),
+            ));
+        }
+        publish_staged(&root, target, force)
+    })();
+
+    let _ = fs::remove_dir_all(&staging);
+    result
+}
+
+fn remove_staged(path: &Path) -> Result<(), FileManagerError> {
     let metadata = fs::symlink_metadata(path)?;
     if metadata.is_dir() && !metadata.file_type().is_symlink() {
         fs::remove_dir_all(path)?;
@@ -241,11 +781,101 @@ fn remove_existing(path: &Path) -> Result<(), FileManagerError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BackupKind, deploy, save_manifest, save_manifest_with_ignores};
+    use super::{
+        ArchiveLimits, BackupKind, DeploymentManifest, deploy, extract_archive_limited,
+        publish_new, publish_staged, replace_staged, save_compressed_manifest_with_ignores,
+        save_manifest, save_manifest_with_ignores,
+    };
     use crate::settings::Settings;
+    use crate::test::TestDir;
+    use crate::{
+        file_module::FileManager,
+        file_module::compress::{ArchiveFormat, CompressionMethod},
+    };
+    use flate2::Compression;
+    use flate2::read::GzDecoder;
+    use flate2::write::GzEncoder;
     use std::fs;
     #[cfg(unix)]
+    use std::io;
+    use std::io::{Cursor, Write};
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
+
+    #[test]
+    fn failed_forced_publish_restores_existing_target() {
+        let temp = TestDir::new("deploy-failed-install-restore");
+        let target = temp.path().join("target");
+        let missing_staged = temp.path().join("missing-staged");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("keep.txt"), b"original").unwrap();
+
+        let error = replace_staged(&missing_staged, &target).unwrap_err();
+
+        assert!(matches!(error, crate::file_module::FileManagerError::Io(_)));
+        assert_eq!(fs::read(target.join("keep.txt")).unwrap(), b"original");
+    }
+
+    fn gzip_archive(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let encoder = GzEncoder::new(Vec::new(), Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        for (path, data) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o600);
+            header.set_entry_type(tar::EntryType::Regular);
+            header.set_cksum();
+            archive
+                .append_data(&mut header, path, Cursor::new(*data))
+                .unwrap();
+        }
+        archive.into_inner().unwrap().finish().unwrap()
+    }
+
+    #[cfg(unix)]
+    fn gzip_archive_with_symlink(path: &str, link_target: &str) -> Vec<u8> {
+        let encoder = GzEncoder::new(Vec::new(), Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(0);
+        header.set_mode(0o777);
+        header.set_entry_type(tar::EntryType::Symlink);
+        header.set_link_name(link_target).unwrap();
+        header.set_cksum();
+        archive.append_data(&mut header, path, io::empty()).unwrap();
+        archive.into_inner().unwrap().finish().unwrap()
+    }
+
+    #[test]
+    fn legacy_manifest_defaults_to_the_tar_archive_format() {
+        let manifest: DeploymentManifest = serde_json::from_str(
+            r#"{
+                "version": 1,
+                "kind": "compress",
+                "original_path": "/tmp/original",
+                "backup_path": "/tmp/backup.tar.gz",
+                "compression_method": "gzip",
+                "ignore_rules": [],
+                "partial_move": false,
+                "created_at": 0
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(manifest.archive_format, ArchiveFormat::Tar);
+    }
+
+    fn zip_archive(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let cursor = Cursor::new(Vec::new());
+        let mut archive = zip::ZipWriter::new(cursor);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for (path, data) in entries {
+            archive.start_file(*path, options).unwrap();
+            archive.write_all(data).unwrap();
+        }
+        archive.finish().unwrap().into_inner()
+    }
 
     #[test]
     fn copied_backup_requires_explicit_authorization_for_recorded_destination() {
@@ -310,6 +940,26 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn directory_backup_deploys_through_the_staged_no_clobber_path() {
+        let temp = TestDir::new("deploy-directory");
+        let original = temp.path().join("original");
+        let backup = temp.path().join("backup");
+        let target = temp.path().join("target");
+        fs::create_dir_all(backup.join("nested")).unwrap();
+        fs::write(backup.join("save.dat"), b"save").unwrap();
+        fs::write(backup.join("nested/settings.dat"), b"settings").unwrap();
+        save_manifest(&original, &backup, BackupKind::Copy, None).unwrap();
+
+        deploy(&backup, Some(&target), false, false, &Settings::default()).unwrap();
+
+        assert_eq!(fs::read(target.join("save.dat")).unwrap(), b"save");
+        assert_eq!(
+            fs::read(target.join("nested/settings.dat")).unwrap(),
+            b"settings"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn dangling_symlink_destination_requires_force() {
@@ -337,5 +987,374 @@ mod tests {
                 .is_symlink()
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn late_file_destination_is_not_overwritten_without_force() {
+        let temp = TestDir::new("deploy-late-file");
+        let staged = temp.path().join("staged.txt");
+        let target = temp.path().join("target.txt");
+        fs::write(&staged, b"deployment").unwrap();
+        fs::write(&target, b"late writer").unwrap();
+
+        // Model a destination created after `deploy` made its initial check.
+        assert!(publish_new(&staged, &target).is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"late writer");
+        assert_eq!(fs::read(&staged).unwrap(), b"deployment");
+    }
+
+    #[test]
+    fn late_directory_destination_is_not_overwritten_without_force() {
+        let temp = TestDir::new("deploy-late-directory");
+        let staged = temp.path().join("staged");
+        let target = temp.path().join("target");
+        fs::create_dir(&staged).unwrap();
+        fs::write(staged.join("replacement.txt"), b"deployment").unwrap();
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("keep.txt"), b"late writer").unwrap();
+
+        // This is the directory equivalent of a late destination collision.
+        assert!(publish_new(&staged, &target).is_err());
+        assert_eq!(fs::read(target.join("keep.txt")).unwrap(), b"late writer");
+        assert_eq!(
+            fs::read(staged.join("replacement.txt")).unwrap(),
+            b"deployment"
+        );
+    }
+
+    #[test]
+    fn forced_publish_replaces_only_after_staging_is_complete() {
+        let temp = TestDir::new("deploy-force-replace");
+        let staged = temp.path().join("staged");
+        let target = temp.path().join("target");
+        fs::create_dir(&staged).unwrap();
+        fs::write(staged.join("replacement.txt"), b"deployment").unwrap();
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("keep.txt"), b"previous deployment").unwrap();
+
+        publish_staged(&staged, &target, true).unwrap();
+        assert!(!staged.exists());
+        assert_eq!(
+            fs::read(target.join("replacement.txt")).unwrap(),
+            b"deployment"
+        );
+        assert!(!target.join("keep.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn forced_tar_deploy_rejects_symlink_root_without_replacing_target() {
+        let temp = TestDir::new("deploy-tar-symlink-root");
+        let backup = temp.path().join("backup.tar.gz");
+        let target = temp.path().join("target");
+        let outside = temp.path().join("outside");
+        fs::write(
+            &backup,
+            gzip_archive_with_symlink("root", outside.to_str().unwrap()),
+        )
+        .unwrap();
+        fs::write(&target, b"previous deployment").unwrap();
+        save_manifest(
+            &target,
+            &backup,
+            BackupKind::Compress,
+            Some(CompressionMethod::Gzip),
+        )
+        .unwrap();
+
+        assert!(deploy(&backup, Some(&target), true, false, &Settings::default()).is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"previous deployment");
+
+        fs::remove_file(&target).unwrap();
+        assert!(deploy(&backup, Some(&target), true, false, &Settings::default()).is_err());
+        assert!(!target.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn forced_tar_deploy_rejects_nested_symlink_without_replacing_target() {
+        let temp = TestDir::new("deploy-tar-symlink-nested");
+        let backup = temp.path().join("backup.tar.gz");
+        let target = temp.path().join("target");
+        let encoder = GzEncoder::new(Vec::new(), Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(4);
+        header.set_mode(0o600);
+        header.set_entry_type(tar::EntryType::Regular);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, "root/save", Cursor::new(b"save"))
+            .unwrap();
+        let mut header = tar::Header::new_gnu();
+        header.set_size(0);
+        header.set_mode(0o777);
+        header.set_entry_type(tar::EntryType::Symlink);
+        header.set_link_name("../../outside").unwrap();
+        header.set_cksum();
+        archive
+            .append_data(&mut header, "root/link", io::empty())
+            .unwrap();
+        fs::write(&backup, archive.into_inner().unwrap().finish().unwrap()).unwrap();
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("keep"), b"previous deployment").unwrap();
+        save_manifest(
+            &target,
+            &backup,
+            BackupKind::Compress,
+            Some(CompressionMethod::Gzip),
+        )
+        .unwrap();
+
+        assert!(deploy(&backup, Some(&target), true, false, &Settings::default()).is_err());
+        assert_eq!(
+            fs::read(target.join("keep")).unwrap(),
+            b"previous deployment"
+        );
+    }
+
+    #[test]
+    fn forced_tar_deploy_replaces_target_with_regular_file() {
+        let temp = TestDir::new("deploy-tar-force-regular");
+        let backup = temp.path().join("backup.tar.gz");
+        let target = temp.path().join("target");
+        fs::write(&backup, gzip_archive(&[("root", b"replacement")])).unwrap();
+        fs::write(&target, b"previous deployment").unwrap();
+        save_manifest(
+            &target,
+            &backup,
+            BackupKind::Compress,
+            Some(CompressionMethod::Gzip),
+        )
+        .unwrap();
+
+        deploy(&backup, Some(&target), true, false, &Settings::default()).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"replacement");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn forced_tar_deploy_accepts_arkive_backup_with_source_symlink() {
+        let temp = TestDir::new("deploy-tar-source-symlink");
+        let source = temp.path().join("source");
+        let backup = temp.path().join("backup.tar.gz");
+        let target = temp.path().join("target");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("save"), b"save data").unwrap();
+        symlink(source.join("save"), source.join("link")).unwrap();
+        FileManager::new(&source, &backup, &Settings::default())
+            .compress_path(CompressionMethod::Gzip, false)
+            .unwrap();
+        fs::create_dir(&target).unwrap();
+        save_manifest(
+            &target,
+            &backup,
+            BackupKind::Compress,
+            Some(CompressionMethod::Gzip),
+        )
+        .unwrap();
+
+        deploy(&backup, Some(&target), true, false, &Settings::default()).unwrap();
+        assert_eq!(fs::read(target.join("link")).unwrap(), b"save data");
+        assert!(fs::symlink_metadata(target.join("link")).unwrap().is_file());
+    }
+
+    #[test]
+    fn archive_extraction_stops_at_the_entry_limit() {
+        let temp = TestDir::new("deploy-archive-entry-limit");
+        let bytes = gzip_archive(&[("first", b"one"), ("second", b"two")]);
+        let limits = ArchiveLimits {
+            entries: 1,
+            file_bytes: 10,
+            total_bytes: 10,
+            path_bytes: 64,
+            path_depth: 4,
+        };
+
+        assert!(
+            extract_archive_limited(GzDecoder::new(Cursor::new(bytes)), temp.path(), limits)
+                .is_err()
+        );
+        assert_eq!(fs::read(temp.path().join("first")).unwrap(), b"one");
+        assert!(!temp.path().join("second").exists());
+    }
+
+    #[test]
+    fn archive_extraction_rejects_expanded_byte_budget_before_writing_entry() {
+        let temp = TestDir::new("deploy-archive-byte-limit");
+        let bytes = gzip_archive(&[("first", b"four"), ("second", b"four")]);
+        let limits = ArchiveLimits {
+            entries: 3,
+            file_bytes: 4,
+            total_bytes: 6,
+            path_bytes: 64,
+            path_depth: 4,
+        };
+
+        assert!(
+            extract_archive_limited(GzDecoder::new(Cursor::new(bytes)), temp.path(), limits)
+                .is_err()
+        );
+        assert_eq!(fs::read(temp.path().join("first")).unwrap(), b"four");
+        assert!(!temp.path().join("second").exists());
+    }
+
+    #[test]
+    fn archive_extraction_rejects_oversized_file_before_writing() {
+        let temp = TestDir::new("deploy-archive-file-limit");
+        let bytes = gzip_archive(&[("oversized", b"five!")]);
+        let limits = ArchiveLimits {
+            entries: 1,
+            file_bytes: 4,
+            total_bytes: 10,
+            path_bytes: 64,
+            path_depth: 4,
+        };
+
+        assert!(
+            extract_archive_limited(GzDecoder::new(Cursor::new(bytes)), temp.path(), limits)
+                .is_err()
+        );
+        assert!(!temp.path().join("oversized").exists());
+    }
+
+    #[test]
+    fn archive_extraction_rejects_excessive_path_depth_before_writing() {
+        let temp = TestDir::new("deploy-archive-depth-limit");
+        let bytes = gzip_archive(&[("one/two/three", b"data")]);
+        let limits = ArchiveLimits {
+            entries: 1,
+            file_bytes: 10,
+            total_bytes: 10,
+            path_bytes: 64,
+            path_depth: 2,
+        };
+
+        assert!(
+            extract_archive_limited(GzDecoder::new(Cursor::new(bytes)), temp.path(), limits)
+                .is_err()
+        );
+        assert!(!temp.path().join("one").exists());
+    }
+
+    #[test]
+    fn compressed_deploy_uses_the_bounded_extractor() {
+        let temp = TestDir::new("deploy-archive");
+        let original = temp.path().join("original.dat");
+        let backup = temp.path().join("backup.tar.gz");
+        let target = temp.path().join("target.dat");
+        fs::write(&backup, gzip_archive(&[("save.dat", b"save")])).unwrap();
+        save_manifest(
+            &original,
+            &backup,
+            BackupKind::Compress,
+            Some(crate::file_module::compress::CompressionMethod::Gzip),
+        )
+        .unwrap();
+
+        deploy(&backup, Some(&target), false, false, &Settings::default()).unwrap();
+        assert_eq!(fs::read(target).unwrap(), b"save");
+    }
+
+    #[test]
+    fn lz4_backup_deploys_through_the_bounded_extractor() {
+        let temp = TestDir::new("deploy-lz4-archive");
+        let original = temp.path().join("original.dat");
+        let backup = temp.path().join("backup.tar.lz4");
+        let target = temp.path().join("target.dat");
+        fs::write(&original, b"save quickly").unwrap();
+
+        FileManager::new(&original, &backup, &Settings::default())
+            .compress_path(CompressionMethod::Lz4, false)
+            .unwrap();
+        save_manifest(
+            &original,
+            &backup,
+            BackupKind::Compress,
+            Some(CompressionMethod::Lz4),
+        )
+        .unwrap();
+
+        deploy(&backup, Some(&target), false, false, &Settings::default()).unwrap();
+        assert_eq!(fs::read(target).unwrap(), b"save quickly");
+    }
+
+    #[test]
+    fn xz_backup_deploys_through_the_bounded_extractor() {
+        let temp = TestDir::new("deploy-xz-archive");
+        let original = temp.path().join("original.dat");
+        let backup = temp.path().join("backup.tar.xz");
+        let target = temp.path().join("target.dat");
+        fs::write(&original, b"save compactly").unwrap();
+
+        FileManager::new(&original, &backup, &Settings::default())
+            .compress_path(CompressionMethod::Xz, false)
+            .unwrap();
+        save_manifest(
+            &original,
+            &backup,
+            BackupKind::Compress,
+            Some(CompressionMethod::Xz),
+        )
+        .unwrap();
+
+        deploy(&backup, Some(&target), false, false, &Settings::default()).unwrap();
+        assert_eq!(fs::read(target).unwrap(), b"save compactly");
+    }
+
+    #[test]
+    fn bzip2_backup_deploys_through_the_bounded_extractor() {
+        let temp = TestDir::new("deploy-bzip2-archive");
+        let original = temp.path().join("original.dat");
+        let backup = temp.path().join("backup.tar.bz2");
+        let target = temp.path().join("target.dat");
+        fs::write(&original, b"save portably").unwrap();
+
+        FileManager::new(&original, &backup, &Settings::default())
+            .compress_path(CompressionMethod::Bzip2, false)
+            .unwrap();
+        save_manifest(
+            &original,
+            &backup,
+            BackupKind::Compress,
+            Some(CompressionMethod::Bzip2),
+        )
+        .unwrap();
+
+        deploy(&backup, Some(&target), false, false, &Settings::default()).unwrap();
+        assert_eq!(fs::read(target).unwrap(), b"save portably");
+    }
+
+    #[test]
+    fn zip_backup_deploys_through_the_bounded_extractor() {
+        let temp = TestDir::new("deploy-zip-archive");
+        let original = temp.path().join("original.dat");
+        let backup = temp.path().join("backup.zip");
+        let target = temp.path().join("target.dat");
+        fs::write(&original, b"save portably everywhere").unwrap();
+
+        FileManager::new(&original, &backup, &Settings::default())
+            .compress_zip_path(false)
+            .unwrap();
+        save_compressed_manifest_with_ignores(&original, &backup, None, ArchiveFormat::Zip, &[])
+            .unwrap();
+
+        deploy(&backup, Some(&target), false, false, &Settings::default()).unwrap();
+        assert_eq!(fs::read(target).unwrap(), b"save portably everywhere");
+    }
+
+    #[test]
+    fn zip_deployment_rejects_unsafe_entry_paths() {
+        let temp = TestDir::new("deploy-zip-unsafe-path");
+        let original = temp.path().join("original.dat");
+        let backup = temp.path().join("backup.zip");
+        let target = temp.path().join("target.dat");
+        fs::write(&backup, zip_archive(&[("../escaped.dat", b"not allowed")])).unwrap();
+        save_compressed_manifest_with_ignores(&original, &backup, None, ArchiveFormat::Zip, &[])
+            .unwrap();
+
+        assert!(deploy(&backup, Some(&target), false, false, &Settings::default()).is_err());
+        assert!(!target.exists());
+        assert!(!temp.path().join("escaped.dat").exists());
     }
 }

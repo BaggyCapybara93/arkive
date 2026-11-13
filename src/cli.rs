@@ -2,17 +2,18 @@ use crate::batch_module::BatchHandler;
 use crate::error::AppError;
 use crate::file_module::FileManager;
 use crate::file_module::cleanup;
-use crate::file_module::compress::CompressionMethod;
+use crate::file_module::compress::{ArchiveFormat, CompressionMethod};
 use crate::file_module::deploy::{self, BackupKind};
 use crate::file_module::ignore::{IgnoreMatcher, IgnoreOptions};
+use crate::file_module::organize;
 use crate::file_module::remove;
 use crate::settings::Settings;
-use clap::{Args, Parser, Subcommand, value_parser};
+use clap::{Args, Parser, Subcommand, ValueEnum, value_parser};
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(name = "arkive", about = "A simple file management tool")]
-pub struct CLI {
+pub struct Cli {
     #[arg(long, help = "Disable trash, permanently delete files")]
     pub no_trash: bool,
 
@@ -21,9 +22,6 @@ pub struct CLI {
 
     #[arg(long, help = "Preview operations without executing")]
     pub dry_run: bool,
-
-    #[arg(long, help = "Path to use as last used directory for config")]
-    pub last_used_directory: Option<PathBuf>,
 
     #[command(subcommand)]
     pub command: Command,
@@ -71,6 +69,23 @@ impl From<&IgnoreArgs> for IgnoreOptions {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Sort files in one directory into extension-named folders
+    Organize {
+        #[command(subcommand)]
+        command: OrganizeCommand,
+    },
+    /// View or update Arkive's persistent configuration
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
+
+    /// Manage a filesystem vault, including an OS-mounted SMB/NFS share
+    Vault {
+        #[command(subcommand)]
+        command: VaultCommand,
+    },
+
     /// Move a file or directory
     Move {
         /// Source path
@@ -108,7 +123,7 @@ pub enum Command {
         ignore: IgnoreArgs,
     },
 
-    /// Compress a file or directory into a gzip- or Zstandard-compressed tar archive
+    /// Compress a file or directory into a tar archive or a portable ZIP archive
     Compress {
         /// Source path
         src: PathBuf,
@@ -116,8 +131,11 @@ pub enum Command {
         /// Destination path
         dest: PathBuf,
 
-        #[arg(long, help = "Compression method (gzip or zstd)", value_parser = value_parser!(CompressionMethod))]
+        #[arg(long, help = "Compression method (gzip, zstd, lz4, xz, or bzip2)", value_parser = value_parser!(CompressionMethod))]
         method: Option<CompressionMethod>,
+
+        #[arg(long, help = "Archive format (tar or zip; default: tar)", value_parser = value_parser!(ArchiveFormat))]
+        format: Option<ArchiveFormat>,
 
         /// Save portable metadata so this archive can be deployed later
         #[arg(long)]
@@ -231,6 +249,46 @@ pub enum Command {
 }
 
 #[derive(Subcommand)]
+pub enum OrganizeCommand {
+    /// Move regular files into extension-named folders
+    ByExtension {
+        /// Directory whose immediate files will be organized
+        path: PathBuf,
+        /// Write .arkive-folder.json in each destination folder
+        #[arg(long)]
+        folder_metadata: bool,
+    },
+    /// Reverse an organize run using its saved manifest
+    Undo {
+        /// .arkive-organize-*.json manifest printed by the run
+        manifest: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ConfigCommand {
+    /// Print the configuration file location without creating it
+    Path,
+    /// Print the complete configuration as JSON
+    Show,
+    /// Print one configuration value
+    Get { key: ConfigKey },
+    /// Set one configuration value
+    Set { key: ConfigKey, value: String },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum ConfigKey {
+    EnableTrash,
+    Verbose,
+    DryRun,
+    Recursive,
+    EnableMetadata,
+    CompressionMethod,
+    UseTimestamp,
+}
+
+#[derive(Subcommand)]
 pub enum IgnoreCommand {
     /// Explain whether a path is included or excluded
     Check {
@@ -243,6 +301,154 @@ pub enum IgnoreCommand {
 
         #[command(flatten)]
         ignore: IgnoreArgs,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum VaultCommand {
+    /// Initialize an existing empty directory as a versioned vault
+    Init { path: PathBuf },
+    /// Test read, write, rename, delete, and SHA-256 verification in an existing directory
+    Check { path: PathBuf },
+    /// Audit snapshot manifests and content-addressed objects
+    Health {
+        path: PathBuf,
+        /// Print the health report as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove verified objects that no snapshot references
+    Gc {
+        path: PathBuf,
+        /// Print the garbage-collection report as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove old snapshots while retaining a selected history
+    Prune {
+        path: PathBuf,
+        /// Retain at least this many newest snapshots
+        #[arg(long)]
+        keep_last: usize,
+        /// Retain a snapshot by its full ID; may be repeated
+        #[arg(long = "protect")]
+        protected: Vec<String>,
+        /// Print the pruning report as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Configure and inspect the logical vault-storage quota
+    Quota {
+        #[command(subcommand)]
+        command: QuotaCommand,
+    },
+    /// Snapshot a save file or directory into an initialized vault
+    Snapshot {
+        path: PathBuf,
+        /// Current save file or directory to snapshot
+        #[arg(required_unless_present = "profile", conflicts_with = "profile")]
+        source: Option<PathBuf>,
+        /// Optional description (up to 256 UTF-8 bytes)
+        #[arg(long)]
+        label: Option<String>,
+        /// Name of a configured game profile to snapshot
+        #[arg(long, required_unless_present = "source", conflicts_with = "source")]
+        profile: Option<String>,
+        /// Acknowledge a configured storage-quota warning for this snapshot
+        #[arg(long)]
+        yes: bool,
+    },
+    /// List snapshot history (manifest integrity is checked; objects are not read)
+    Snapshots {
+        path: PathBuf,
+        /// Print complete snapshot manifests as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Verify a snapshot manifest and every referenced save object
+    VerifySnapshot { path: PathBuf, snapshot: String },
+    /// Compare a save source with a selected snapshot
+    Diff {
+        path: PathBuf,
+        /// Full 64-character snapshot ID
+        snapshot: String,
+        /// Current save file or directory to compare
+        #[arg(required_unless_present = "profile", conflicts_with = "profile")]
+        source: Option<PathBuf>,
+        /// Print the comparison as JSON
+        #[arg(long)]
+        json: bool,
+        /// Name of a configured game profile to compare
+        #[arg(long, required_unless_present = "source", conflicts_with = "source")]
+        profile: Option<String>,
+    },
+    /// Compare a save source with the newest snapshot
+    Status {
+        path: PathBuf,
+        /// Current save file or directory to compare
+        #[arg(required_unless_present = "profile", conflicts_with = "profile")]
+        source: Option<PathBuf>,
+        /// Print the comparison as JSON
+        #[arg(long)]
+        json: bool,
+        /// Name of a configured game profile to compare
+        #[arg(long, required_unless_present = "source", conflicts_with = "source")]
+        profile: Option<String>,
+    },
+    /// Restore a snapshot into a new, explicit destination directory
+    Restore {
+        path: PathBuf,
+        /// Full 64-character snapshot ID
+        snapshot: String,
+        /// New directory that will receive the restored save; it must not already exist
+        destination: PathBuf,
+    },
+    /// Manage named game-save profiles
+    Profile {
+        #[command(subcommand)]
+        command: ProfileCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ProfileCommand {
+    /// Add a named profile for a save file or directory
+    Add {
+        path: PathBuf,
+        /// Profile name used by --profile
+        name: String,
+        /// Current save file or directory
+        source: PathBuf,
+    },
+    /// List configured game-save profiles
+    List {
+        path: PathBuf,
+        /// Print profiles as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove a profile without deleting snapshots or save data
+    Remove { path: PathBuf, name: String },
+}
+
+#[derive(Subcommand)]
+pub enum QuotaCommand {
+    /// Set the maximum logical storage used by snapshots and their objects
+    Set {
+        path: PathBuf,
+        /// Maximum logical vault storage, for example 50GiB
+        #[arg(long)]
+        max_size: String,
+        /// Require --yes once this percentage of the maximum would be used (1-99)
+        #[arg(long, default_value_t = 80)]
+        warn_at: u8,
+    },
+    /// Show configured quota and current logical vault usage
+    Show {
+        path: PathBuf,
+        /// Print the quota report as JSON
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -318,6 +524,7 @@ fn handle_compress(
     src: &Path,
     dest: &Path,
     method: Option<CompressionMethod>,
+    format: Option<ArchiveFormat>,
     metadata: bool,
     ignore_args: &IgnoreArgs,
     settings: &Settings,
@@ -325,18 +532,36 @@ fn handle_compress(
     let original = std::fs::canonicalize(src)?;
     let matcher = IgnoreMatcher::build(src, &IgnoreOptions::from(ignore_args))?;
     let fm = FileManager::new(src, dest, settings);
-    let compression_method = method.unwrap_or(settings.compression_method);
-    let (backup, ignored) =
-        fm.compress_path_filtered(compression_method, settings.use_timestamp, Some(&matcher))?;
+    let archive_format = format.unwrap_or_default();
+    let (backup, ignored, compression_method) = match archive_format {
+        ArchiveFormat::Tar => {
+            let compression_method = method.unwrap_or(settings.compression_method);
+            let (backup, ignored) = fm.compress_path_filtered(
+                compression_method,
+                settings.use_timestamp,
+                Some(&matcher),
+            )?;
+            (backup, ignored, Some(compression_method))
+        }
+        ArchiveFormat::Zip => {
+            if method.is_some() {
+                return Err(AppError::InvalidInput(
+                    "--method applies only to the tar archive format".into(),
+                ));
+            }
+            let (backup, ignored) =
+                fm.compress_zip_path_filtered(settings.use_timestamp, Some(&matcher))?;
+            (backup, ignored, None)
+        }
+    };
     print_ignore_summary(&ignored, settings);
     if metadata && !settings.dry_run {
-        deploy::save_manifest_with_ignores(
+        deploy::save_compressed_manifest_with_ignores(
             &original,
             &backup,
-            BackupKind::Compress,
-            Some(compression_method),
+            compression_method,
+            archive_format,
             matcher.descriptions(),
-            false,
         )?;
     }
     Ok(())
@@ -456,8 +681,197 @@ fn handle_list_trash(settings: &Settings) -> Result<(), AppError> {
     Ok(())
 }
 
-pub fn cli_handler(cmd: Command, settings: &Settings) -> Result<(), AppError> {
+fn config_value(config: &crate::config_module::Config, key: ConfigKey) -> String {
+    match key {
+        ConfigKey::EnableTrash => config.enable_trash.to_string(),
+        ConfigKey::Verbose => config.verbose.to_string(),
+        ConfigKey::DryRun => config.dry_run.to_string(),
+        ConfigKey::Recursive => config.recursive.to_string(),
+        ConfigKey::EnableMetadata => config.enable_metadata.to_string(),
+        ConfigKey::CompressionMethod => match config.compression_method {
+            CompressionMethod::Gzip => "gzip".into(),
+            CompressionMethod::Zstd => "zstd".into(),
+            CompressionMethod::Lz4 => "lz4".into(),
+            CompressionMethod::Xz => "xz".into(),
+            CompressionMethod::Bzip2 => "bzip2".into(),
+        },
+        ConfigKey::UseTimestamp => config.use_timestamp.to_string(),
+    }
+}
+
+fn set_config_value(
+    config: &mut crate::config_module::Config,
+    key: ConfigKey,
+    value: &str,
+) -> Result<(), AppError> {
+    let bool_value = || {
+        value.parse::<bool>().map_err(|_| {
+            AppError::InvalidInput(format!(
+                "{key:?} must be either true or false; received {value:?}"
+            ))
+        })
+    };
+
+    match key {
+        ConfigKey::EnableTrash => config.enable_trash = bool_value()?,
+        ConfigKey::Verbose => config.verbose = bool_value()?,
+        ConfigKey::DryRun => config.dry_run = bool_value()?,
+        ConfigKey::Recursive => config.recursive = bool_value()?,
+        ConfigKey::EnableMetadata => config.enable_metadata = bool_value()?,
+        ConfigKey::UseTimestamp => config.use_timestamp = bool_value()?,
+        ConfigKey::CompressionMethod => {
+            config.compression_method = value.parse().map_err(|_| {
+                AppError::InvalidInput(format!(
+                    "compression-method must be one of gzip, zstd, lz4, xz, or bzip2; received {value:?}"
+                ))
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn handle_config(
+    command: ConfigCommand,
+    config_manager: &crate::config_module::ConfigManager,
+    dry_run_requested: bool,
+) -> Result<(), AppError> {
+    match command {
+        ConfigCommand::Path => println!("{}", config_manager.path().display()),
+        ConfigCommand::Show => {
+            let config = config_manager.load()?;
+            let rendered = serde_json::to_string_pretty(&config).map_err(|error| {
+                AppError::InvalidInput(format!("could not render configuration as JSON: {error}"))
+            })?;
+            println!("{rendered}")
+        }
+        ConfigCommand::Get { key } => println!("{}", config_value(&config_manager.load()?, key)),
+        ConfigCommand::Set { key, value } => {
+            let mut config = config_manager.load()?;
+            set_config_value(&mut config, key, &value)?;
+            if dry_run_requested {
+                println!(
+                    "[DRY-RUN] Would update {}: {}",
+                    key.to_possible_value().unwrap().get_name(),
+                    config_value(&config, key)
+                );
+                return Ok(());
+            }
+            config_manager.save(&config)?;
+            println!(
+                "Updated {}: {}",
+                key.to_possible_value().unwrap().get_name(),
+                config_value(&config, key)
+            );
+        }
+    }
+    Ok(())
+}
+
+pub fn cli_handler(
+    cmd: Command,
+    settings: &Settings,
+    config_manager: &crate::config_module::ConfigManager,
+    dry_run_requested: bool,
+) -> Result<(), AppError> {
     match cmd {
+        Command::Organize { command } => match command {
+            OrganizeCommand::ByExtension {
+                path,
+                folder_metadata,
+            } => {
+                organize::by_extension(&path, folder_metadata, settings)?;
+                Ok(())
+            }
+            OrganizeCommand::Undo { manifest } => {
+                organize::undo(&manifest, settings)?;
+                Ok(())
+            }
+        },
+        Command::Config { command } => handle_config(command, config_manager, dry_run_requested),
+        Command::Vault { command } => match command {
+            VaultCommand::Init { path } => crate::vault::init(&path, settings.dry_run),
+            VaultCommand::Check { path } => crate::vault::check(&path, settings.dry_run),
+            VaultCommand::Health { path, json } => crate::vault::snapshots::health(&path, json),
+            VaultCommand::Gc { path, json } => {
+                crate::vault::snapshots::gc(&path, settings.dry_run, json)
+            }
+            VaultCommand::Prune {
+                path,
+                keep_last,
+                protected,
+                json,
+            } => {
+                crate::vault::snapshots::prune(&path, keep_last, &protected, settings.dry_run, json)
+            }
+            VaultCommand::Quota { command } => match command {
+                QuotaCommand::Set {
+                    path,
+                    max_size,
+                    warn_at,
+                } => {
+                    crate::vault::snapshots::quota_set(&path, &max_size, warn_at, settings.dry_run)
+                }
+                QuotaCommand::Show { path, json } => {
+                    crate::vault::snapshots::quota_show(&path, json)
+                }
+            },
+            VaultCommand::Snapshot {
+                path,
+                source,
+                label,
+                profile,
+                yes,
+            } => crate::vault::snapshots::create_selected(
+                &path,
+                source.as_deref(),
+                profile.as_deref(),
+                label,
+                settings.dry_run,
+                yes,
+            ),
+            VaultCommand::Snapshots { path, json } => crate::vault::snapshots::list(&path, json),
+            VaultCommand::VerifySnapshot { path, snapshot } => {
+                crate::vault::snapshots::verify(&path, &snapshot)
+            }
+            VaultCommand::Diff {
+                path,
+                snapshot,
+                source,
+                json,
+                profile,
+            } => crate::vault::snapshots::diff_selected(
+                &path,
+                &snapshot,
+                source.as_deref(),
+                profile.as_deref(),
+                json,
+            ),
+            VaultCommand::Status {
+                path,
+                source,
+                json,
+                profile,
+            } => crate::vault::snapshots::status_selected(
+                &path,
+                source.as_deref(),
+                profile.as_deref(),
+                json,
+            ),
+            VaultCommand::Restore {
+                path,
+                snapshot,
+                destination,
+            } => crate::vault::snapshots::restore(&path, &snapshot, &destination, settings.dry_run),
+            VaultCommand::Profile { command } => match command {
+                ProfileCommand::Add { path, name, source } => {
+                    crate::vault::profiles::add(&path, &name, &source, settings.dry_run)
+                }
+                ProfileCommand::List { path, json } => crate::vault::profiles::list(&path, json),
+                ProfileCommand::Remove { path, name } => {
+                    crate::vault::profiles::remove(&path, &name, settings.dry_run)
+                }
+            },
+        },
         Command::Move {
             src,
             dest,
@@ -476,9 +890,10 @@ pub fn cli_handler(cmd: Command, settings: &Settings) -> Result<(), AppError> {
             src,
             dest,
             method,
+            format,
             metadata,
             ignore,
-        } => handle_compress(&src, &dest, method, metadata, &ignore, settings),
+        } => handle_compress(&src, &dest, method, format, metadata, &ignore, settings),
         Command::Deploy {
             backup,
             destination,
@@ -534,5 +949,70 @@ pub fn cli_handler(cmd: Command, settings: &Settings) -> Result<(), AppError> {
             extension,
             trash,
         } => handle_remove(&path, &pattern, extension.as_deref(), trash, settings),
+    }
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    #[test]
+    fn config_setter_accepts_documented_values_and_reports_them_canonically() {
+        let mut config = crate::config_module::Config::default();
+
+        set_config_value(&mut config, ConfigKey::EnableTrash, "false").unwrap();
+        set_config_value(&mut config, ConfigKey::CompressionMethod, "zst").unwrap();
+
+        assert_eq!(config_value(&config, ConfigKey::EnableTrash), "false");
+        assert_eq!(config_value(&config, ConfigKey::CompressionMethod), "zstd");
+    }
+
+    #[test]
+    fn config_setter_rejects_invalid_values() {
+        let mut config = crate::config_module::Config::default();
+
+        assert!(set_config_value(&mut config, ConfigKey::Verbose, "yes").is_err());
+        assert!(set_config_value(&mut config, ConfigKey::CompressionMethod, "brotli").is_err());
+    }
+
+    #[test]
+    fn dry_run_config_set_does_not_create_a_configuration_file() {
+        let temp = crate::test::TestDir::new("config-dry-run");
+        let manager =
+            crate::config_module::ConfigManager::from_path(temp.path().join("config.json"));
+
+        handle_config(
+            ConfigCommand::Set {
+                key: ConfigKey::EnableTrash,
+                value: "false".into(),
+            },
+            &manager,
+            true,
+        )
+        .unwrap();
+
+        assert!(!manager.path().exists());
+    }
+
+    #[test]
+    fn config_set_writes_a_validated_value() {
+        let temp = crate::test::TestDir::new("config-set");
+        let manager =
+            crate::config_module::ConfigManager::from_path(temp.path().join("config.json"));
+
+        handle_config(
+            ConfigCommand::Set {
+                key: ConfigKey::CompressionMethod,
+                value: "zstd".into(),
+            },
+            &manager,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            manager.load().unwrap().compression_method,
+            CompressionMethod::Zstd
+        );
     }
 }

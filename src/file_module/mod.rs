@@ -8,6 +8,7 @@ pub mod ignore;
 pub mod manager;
 pub mod metadata;
 pub mod ops;
+pub mod organize;
 pub mod remove;
 pub mod rename;
 pub mod trash;
@@ -24,7 +25,7 @@ pub fn add_timestamp_to_path(path: &Path) -> Result<PathBuf, FileManagerError> {
 
     // Split the path into directory and filename
     let (dir, file) = path_str
-        .rsplit_once(|c| c == '/' || c == '\\')
+        .rsplit_once(['/', '\\'])
         .map(|(d, f)| (d, Some(f)))
         .unwrap_or((path_str, Some(path_str)));
 

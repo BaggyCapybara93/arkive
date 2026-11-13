@@ -8,6 +8,7 @@ mod metadata_module;
 mod settings;
 #[cfg(test)]
 mod test;
+mod vault;
 
 use crate::cli::cli_handler;
 use crate::config_module::ConfigManager;
@@ -16,10 +17,14 @@ use crate::settings::Settings;
 use clap::Parser;
 
 fn main() -> Result<(), AppError> {
-    let cli = crate::cli::CLI::parse();
+    let cli = crate::cli::Cli::parse();
+    let dry_run_requested = cli.dry_run;
 
     let config_manager = ConfigManager::new()?;
-    config_manager.create_default_config()?;
+    let is_config_command = matches!(cli.command, crate::cli::Command::Config { .. });
+    if !cli.dry_run && !is_config_command {
+        config_manager.create_default_config()?;
+    }
 
     let config = config_manager.load()?;
 
@@ -37,6 +42,6 @@ fn main() -> Result<(), AppError> {
         use_timestamp: config.use_timestamp,
     };
 
-    cli_handler(cli.command, &settings)?;
+    cli_handler(cli.command, &settings, &config_manager, dry_run_requested)?;
     Ok(())
 }

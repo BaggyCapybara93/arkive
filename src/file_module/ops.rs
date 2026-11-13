@@ -56,6 +56,62 @@ pub(crate) fn create_temp_dir_sibling(path: &Path) -> Result<PathBuf, FileManage
     ))
 }
 
+pub(crate) fn ensure_destination_absent(path: &Path) -> Result<(), FileManagerError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Err(FileManagerError::InvalidInput(format!(
+            "Destination already exists: {path:?}"
+        ))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Move without replacing a file, directory, or dangling symlink at the target.
+pub(crate) fn move_no_replace(source: &Path, destination: &Path) -> Result<(), FileManagerError> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let result = rustix::fs::renameat_with(
+        rustix::fs::CWD,
+        source,
+        rustix::fs::CWD,
+        destination,
+        rustix::fs::RenameFlags::NOREPLACE,
+    )
+    .map_err(std::io::Error::from);
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let result = {
+        ensure_destination_absent(destination)?;
+        fs::rename(source, destination)
+    };
+
+    match result {
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Err(
+            FileManagerError::InvalidInput(format!("Destination already exists: {destination:?}")),
+        ),
+        other => other.map_err(FileManagerError::from),
+    }
+}
+
+/// Restore a destination displaced during staged replacement. Preserve both
+/// failures, and the displaced path, if the restore itself cannot complete.
+pub(crate) fn restore_displaced_after_failed_install(
+    displaced: &Path,
+    destination: &Path,
+    operation: &'static str,
+    original: std::io::Error,
+) -> FileManagerError {
+    match fs::rename(displaced, destination) {
+        Ok(()) => FileManagerError::Io(original),
+        Err(rollback) => FileManagerError::RollbackFailed {
+            operation,
+            path: destination.to_path_buf(),
+            displaced: displaced.to_path_buf(),
+            original,
+            rollback,
+        },
+    }
+}
+
 impl<'a> FileManager<'a> {
     pub(crate) fn canonical_destination_file(
         src: &Path,
@@ -103,16 +159,17 @@ impl<'a> FileManager<'a> {
             valid_directory(src)?;
         }
 
+        let dest_path = Self::canonical_destination_file(src, dst)?;
         if self.settings.dry_run {
+            ensure_destination_absent(&dest_path)?;
             if self.settings.verbose {
-                println!("[DRY-RUN] Would move {:?} to {:?}", src, dst);
+                println!("[DRY-RUN] Would move {:?} to {:?}", src, dest_path);
             }
-            return Ok(dst.to_path_buf());
+            return Ok(dest_path);
         }
 
         let source_metadata_keys = self.metadata_keys_for_path(src)?;
-        let dest_path = Self::canonical_destination_file(src, dst)?;
-        fs::rename(src, &dest_path)?;
+        move_no_replace(src, &dest_path)?;
 
         if self.settings.enable_metadata {
             let manager = self.metadata_manager_for_destination(&dest_path)?;
@@ -177,7 +234,7 @@ impl<'a> FileManager<'a> {
             }
 
             let dst = FileManager::unique_trash_path(src_path)?;
-            fs::rename(src_path, &dst)?;
+            super::trash::move_to_trash(src_path, &dst)?;
 
             if self.settings.verbose {
                 println!("Moved {:?} to trash", src_path);
@@ -231,9 +288,81 @@ impl<'a> FileManager<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::FileManager;
+    use super::{FileManager, restore_displaced_after_failed_install};
+    use crate::file_module::FileManagerError;
     use crate::settings::Settings;
     use crate::test::TestDir;
+    use std::error::Error;
+    use std::io::{self, ErrorKind};
+
+    #[test]
+    fn successful_restore_returns_the_original_install_error() {
+        let temp = TestDir::new("restore-displaced");
+        let displaced = temp.path().join("displaced");
+        let destination = temp.path().join("destination");
+        std::fs::create_dir(&displaced).unwrap();
+        std::fs::write(displaced.join("keep.txt"), b"original").unwrap();
+
+        let error = restore_displaced_after_failed_install(
+            &displaced,
+            &destination,
+            "install staged directory",
+            io::Error::new(ErrorKind::NotFound, "staged directory missing"),
+        );
+
+        assert!(
+            matches!(error, FileManagerError::Io(source) if source.kind() == ErrorKind::NotFound)
+        );
+        assert_eq!(
+            std::fs::read(destination.join("keep.txt")).unwrap(),
+            b"original"
+        );
+        assert!(!displaced.exists());
+    }
+
+    #[test]
+    fn failed_restore_reports_both_errors_and_displaced_path() {
+        let temp = TestDir::new("restore-displaced-failure");
+        let displaced = temp.path().join("displaced");
+        let destination = temp.path().join("destination");
+        std::fs::create_dir(&displaced).unwrap();
+        std::fs::write(displaced.join("keep.txt"), b"original").unwrap();
+        std::fs::write(&destination, b"obstruction").unwrap();
+
+        let error = restore_displaced_after_failed_install(
+            &displaced,
+            &destination,
+            "install staged directory",
+            io::Error::new(ErrorKind::NotFound, "staged directory missing"),
+        );
+
+        assert!(matches!(
+            &error,
+            FileManagerError::RollbackFailed {
+                operation: "install staged directory",
+                path,
+                displaced: saved,
+                original,
+                rollback: _,
+            } if path == &destination && saved == &displaced &&
+                original.kind() == ErrorKind::NotFound
+        ));
+        let message = error.to_string();
+        assert!(message.contains("staged directory missing"));
+        assert!(message.contains("rollback also failed"));
+        assert!(message.contains(&displaced.display().to_string()));
+        assert!(
+            Error::source(&error)
+                .unwrap()
+                .downcast_ref::<io::Error>()
+                .is_some()
+        );
+        assert_eq!(
+            std::fs::read(displaced.join("keep.txt")).unwrap(),
+            b"original"
+        );
+        assert_eq!(std::fs::read(destination).unwrap(), b"obstruction");
+    }
 
     #[test]
     fn move_file_removes_source_and_preserves_contents() {
@@ -250,6 +379,91 @@ mod tests {
         assert_eq!(moved_path, destination);
         assert!(!source.exists());
         assert_eq!(std::fs::read(destination).unwrap(), b"move me");
+    }
+
+    #[test]
+    fn move_refuses_to_replace_an_existing_file() {
+        let temp = TestDir::new("move-existing-file");
+        let source = temp.path().join("source.txt");
+        let destination = temp.path().join("destination.txt");
+        std::fs::write(&source, b"source").unwrap();
+        std::fs::write(&destination, b"keep").unwrap();
+
+        let settings = Settings::default();
+        let error = FileManager::new(&source, &destination, &settings)
+            .move_path()
+            .unwrap_err();
+
+        assert!(error.to_string().contains("Destination already exists"));
+        assert_eq!(std::fs::read(source).unwrap(), b"source");
+        assert_eq!(std::fs::read(destination).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn move_into_directory_refuses_to_replace_a_named_file() {
+        let temp = TestDir::new("move-into-existing-file");
+        let source = temp.path().join("source.txt");
+        let destination_dir = temp.path().join("destination");
+        std::fs::create_dir(&destination_dir).unwrap();
+        std::fs::write(&source, b"source").unwrap();
+        std::fs::write(destination_dir.join("source.txt"), b"keep").unwrap();
+
+        let settings = Settings::default();
+        FileManager::new(&source, &destination_dir, &settings)
+            .move_path()
+            .unwrap_err();
+
+        assert_eq!(std::fs::read(source).unwrap(), b"source");
+        assert_eq!(
+            std::fs::read(destination_dir.join("source.txt")).unwrap(),
+            b"keep"
+        );
+    }
+
+    #[test]
+    fn move_refuses_to_replace_an_empty_directory() {
+        let temp = TestDir::new("move-existing-directory");
+        let source = temp.path().join("source");
+        let destination_parent = temp.path().join("destination");
+        let destination = destination_parent.join("source");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::create_dir(&destination_parent).unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        std::fs::write(source.join("keep.txt"), b"source").unwrap();
+
+        let settings = Settings::default();
+        FileManager::new(&source, &destination_parent, &settings)
+            .move_path()
+            .unwrap_err();
+
+        assert_eq!(std::fs::read(source.join("keep.txt")).unwrap(), b"source");
+        assert!(destination.is_dir());
+        assert_eq!(std::fs::read_dir(destination).unwrap().count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn move_refuses_to_replace_a_dangling_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TestDir::new("move-dangling-symlink");
+        let source = temp.path().join("source.txt");
+        let destination = temp.path().join("destination.txt");
+        std::fs::write(&source, b"source").unwrap();
+        symlink(temp.path().join("missing"), &destination).unwrap();
+
+        let settings = Settings::default();
+        FileManager::new(&source, &destination, &settings)
+            .move_path()
+            .unwrap_err();
+
+        assert_eq!(std::fs::read(source).unwrap(), b"source");
+        assert!(
+            std::fs::symlink_metadata(destination)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
     }
 
     #[test]
