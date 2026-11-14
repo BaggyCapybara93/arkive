@@ -5,6 +5,7 @@ mod error;
 mod file_module;
 mod file_validation;
 mod metadata_module;
+mod remote;
 mod settings;
 #[cfg(test)]
 mod test;
@@ -23,7 +24,9 @@ fn main() -> Result<(), AppError> {
     let config_manager = ConfigManager::new()?;
     let is_read_only_command = matches!(
         cli.command,
-        crate::cli::Command::Config { .. } | crate::cli::Command::Batch { plan: true, .. }
+        crate::cli::Command::Config { .. }
+            | crate::cli::Command::Batch { plan: true, .. }
+            | crate::cli::Command::Remote { .. }
     );
     if !cli.dry_run && !is_read_only_command {
         config_manager.create_default_config()?;

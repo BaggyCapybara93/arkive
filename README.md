@@ -20,10 +20,11 @@ and local-first game-save storage.
 - Save named game profiles for repeatable snapshot and status commands
 - Audit vault health and safely reclaim unreferenced snapshot objects
 - Prune old snapshots while retaining protected history
+- Connect to a prototype Arkive server to push snapshots or transfer ordinary files
 
-Vaults currently store profiles, snapshots, and verified content-addressed
-objects. Synchronization, conflict handling, and encryption are planned but
-not implemented yet.
+Vaults store profiles, snapshots, and verified content-addressed objects. The
+remote prototype supports one-way snapshot pushes and a separate bounded file
+area. Automatic synchronization and conflict handling are not implemented.
 
 ## Install
 
@@ -81,6 +82,7 @@ See the focused documentation for details and safety notes:
 - [Ignore rules, rename, remove, trash, and cleanup](docs/ignore-and-cleanup.md)
 - [Organize files into folders](docs/organize.md)
 - [Batch files and configuration](docs/batch-and-configuration.md)
+- [Remote prototype](docs/remote.md)
 
 The complete command syntax is also available from the binary:
 

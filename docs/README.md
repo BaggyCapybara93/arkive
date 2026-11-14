@@ -8,3 +8,4 @@ has the short overview and quick start.
 - [Copy, move, compress, and deploy](file-operations.md)
 - [Ignore rules, rename, remove, trash, and cleanup](ignore-and-cleanup.md)
 - [Batch files and configuration](batch-and-configuration.md)
+- [Remote prototype](remote.md)

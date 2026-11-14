@@ -5,6 +5,10 @@ storage. An SMB or NFS share should be mounted by the operating system first;
 Arkive treats the mounted path as an ordinary filesystem directory and does
 not handle network credentials.
 
+The [remote prototype](remote.md) can push immutable snapshots to another
+Arkive server. Its ordinary file transfer area is separate from vault snapshot
+history.
+
 ## Initialize a vault
 
 Use an existing, dedicated empty directory. Arkive does not create a missing

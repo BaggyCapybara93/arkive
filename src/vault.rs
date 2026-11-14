@@ -105,6 +105,27 @@ fn validate(root: &Path) -> Result<bool, AppError> {
     Ok(true)
 }
 
+pub(crate) fn remote_identity(path: &Path) -> Result<String, AppError> {
+    let root = root(path)?;
+    if !validate(&root)? {
+        return Err(invalid("Remote server needs an initialized vault"));
+    }
+    let manifest = root.join(CONTROL).join(MANIFEST);
+    let mut bytes = Vec::new();
+    io_at(
+        File::open(&manifest)?.take(65_537).read_to_end(&mut bytes),
+        "read vault manifest",
+        &manifest,
+    )?;
+    if bytes.len() > 65_536 {
+        return Err(invalid("Vault manifest exceeds 64 KiB"));
+    }
+    Ok(Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
 /// A directory reservation coordinates cooperating processes on a shared filesystem.
 /// Never break a lock automatically: an apparently stale client may still be alive.
 struct VaultLock(Option<PathBuf>);

@@ -15,6 +15,9 @@ pub enum AppError {
     #[error("Config error: {0}")]
     ConfigError(#[from] crate::config_module::ConfigError),
 
+    #[error("Remote error: {0}")]
+    RemoteError(#[from] crate::remote::error::RemoteError),
+
     #[error("Invalid input: {0}")]
     InvalidInput(String),
 }

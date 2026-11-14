@@ -7,8 +7,10 @@ use crate::file_module::deploy::{self, BackupKind};
 use crate::file_module::ignore::{IgnoreMatcher, IgnoreOptions};
 use crate::file_module::organize;
 use crate::file_module::remove;
+use crate::remote;
 use crate::settings::Settings;
 use clap::{Args, Parser, Subcommand, ValueEnum, value_parser};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -84,6 +86,12 @@ pub enum Command {
     Vault {
         #[command(subcommand)]
         command: VaultCommand,
+    },
+
+    /// Connect to a prototype Arkive server
+    Remote {
+        #[command(subcommand)]
+        command: RemoteCommand,
     },
 
     /// Move a file or directory
@@ -410,6 +418,78 @@ pub enum VaultCommand {
     Profile {
         #[command(subcommand)]
         command: ProfileCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum RemoteCommand {
+    /// Serve a vault and a bounded ordinary-files area over TLS
+    Serve {
+        vault: PathBuf,
+        #[arg(long)]
+        listen: SocketAddr,
+        #[arg(long)]
+        cert: PathBuf,
+        #[arg(long)]
+        key: PathBuf,
+        #[arg(long)]
+        token_file: PathBuf,
+        /// Use an existing server-owned directory instead of <VAULT>/remote-files
+        #[arg(long)]
+        files_root: Option<PathBuf>,
+    },
+    /// Check a server connection
+    Check {
+        #[arg(long)]
+        address: SocketAddr,
+        #[arg(long)]
+        cert: PathBuf,
+        #[arg(long)]
+        token_file: PathBuf,
+    },
+    /// Push an immutable vault snapshot
+    Push {
+        vault: PathBuf,
+        snapshot: String,
+        #[arg(long)]
+        address: SocketAddr,
+        #[arg(long)]
+        cert: PathBuf,
+        #[arg(long)]
+        token_file: PathBuf,
+    },
+    /// List entries inside the server's ordinary-files area
+    List {
+        #[arg(default_value = "")]
+        path: String,
+        #[arg(long)]
+        address: SocketAddr,
+        #[arg(long)]
+        cert: PathBuf,
+        #[arg(long)]
+        token_file: PathBuf,
+    },
+    /// Copy a local file or directory into the server's ordinary-files area
+    Copy {
+        source: PathBuf,
+        destination: String,
+        #[arg(long)]
+        address: SocketAddr,
+        #[arg(long)]
+        cert: PathBuf,
+        #[arg(long)]
+        token_file: PathBuf,
+    },
+    /// Download a file or directory from the server's ordinary-files area
+    Download {
+        source: String,
+        destination: PathBuf,
+        #[arg(long)]
+        address: SocketAddr,
+        #[arg(long)]
+        cert: PathBuf,
+        #[arg(long)]
+        token_file: PathBuf,
     },
 }
 
@@ -878,6 +958,83 @@ pub fn cli_handler(
                     crate::vault::profiles::remove(&path, &name, settings.dry_run)
                 }
             },
+        },
+        Command::Remote { command } => match command {
+            RemoteCommand::Serve {
+                vault,
+                listen,
+                cert,
+                key,
+                token_file,
+                files_root,
+            } => {
+                if settings.dry_run {
+                    println!("[DRY-RUN] Would serve vault {vault:?} at {listen}");
+                    Ok(())
+                } else {
+                    remote::serve(
+                        &vault,
+                        listen,
+                        &cert,
+                        &key,
+                        &token_file,
+                        files_root.as_deref(),
+                    )
+                }
+            }
+            RemoteCommand::Check {
+                address,
+                cert,
+                token_file,
+            } => remote::check(address, &cert, &token_file),
+            RemoteCommand::Push {
+                vault,
+                snapshot,
+                address,
+                cert,
+                token_file,
+            } => remote::push(
+                &vault,
+                &snapshot,
+                address,
+                &cert,
+                &token_file,
+                settings.dry_run,
+            ),
+            RemoteCommand::List {
+                path,
+                address,
+                cert,
+                token_file,
+            } => remote::list(address, &cert, &token_file, &path),
+            RemoteCommand::Copy {
+                source,
+                destination,
+                address,
+                cert,
+                token_file,
+            } => remote::copy(
+                &source,
+                &destination,
+                address,
+                &cert,
+                &token_file,
+                settings.dry_run,
+            ),
+            RemoteCommand::Download {
+                source,
+                destination,
+                address,
+                cert,
+                token_file,
+            } => remote::download(
+                &source,
+                &destination,
+                address,
+                &cert,
+                &token_file,
+                settings.dry_run,
+            ),
         },
         Command::Move {
             src,

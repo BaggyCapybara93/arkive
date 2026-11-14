@@ -1587,6 +1587,233 @@ pub fn verify(path: &Path, id: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Holds the local vault lock while a remote push reads immutable data.
+pub(crate) struct RemoteExport {
+    root: PathBuf,
+    lock: Option<VaultLock>,
+    pub manifest: Vec<u8>,
+    pub objects: Vec<(String, u64)>,
+}
+
+impl RemoteExport {
+    pub fn release(mut self) -> Result<(), AppError> {
+        self.lock
+            .take()
+            .expect("remote export holds vault lock")
+            .release()
+    }
+
+    pub fn open_object(&self, hash: &str, size: u64) -> Result<File, AppError> {
+        let known = self
+            .objects
+            .binary_search_by_key(&hash, |(id, _)| id.as_str())
+            .ok()
+            .and_then(|index| self.objects.get(index))
+            .is_some_and(|(_, bytes)| *bytes == size);
+        if !known {
+            return Err(invalid("Remote requested an object outside this snapshot"));
+        }
+        let path = object_path(&self.root, hash).join("data");
+        io_at(File::open(&path), "open snapshot object", &path)
+    }
+}
+
+pub(crate) fn remote_export(path: &Path, id: &str) -> Result<RemoteExport, AppError> {
+    let root = initialized(path)?;
+    let lock = VaultLock::acquire(&root)?;
+    let snapshot = load(&root, id)?;
+    verify_loaded(&root, &snapshot)?;
+    let manifest_path = root
+        .join(CONTROL)
+        .join("snapshots")
+        .join(id)
+        .join("manifest.json");
+    let manifest = io_at(
+        fs::read(&manifest_path),
+        "read snapshot manifest",
+        &manifest_path,
+    )?;
+    let mut objects = BTreeMap::new();
+    for entry in &snapshot.manifest.entries {
+        if let Entry::File { sha256, size, .. } = entry {
+            objects.insert(sha256.clone(), *size);
+        }
+    }
+    Ok(RemoteExport {
+        root,
+        lock: Some(lock),
+        manifest,
+        objects: objects.into_iter().collect(),
+    })
+}
+
+/// Holds the receiving vault lock until all referenced objects are verified.
+pub(crate) struct RemoteImport {
+    root: PathBuf,
+    lock: Option<VaultLock>,
+    scratch: Option<PathBuf>,
+    id: String,
+    manifest: Vec<u8>,
+    references: Vec<(String, u64)>,
+    missing: Vec<(String, u64)>,
+}
+
+impl RemoteImport {
+    pub fn begin(path: &Path, id: &str, bytes: Vec<u8>) -> Result<Self, AppError> {
+        if bytes.len() > MAX_MANIFEST_BYTES || !valid_id(id) || hex(&Sha256::digest(&bytes)) != id {
+            return Err(invalid("Invalid remote snapshot ID or manifest size"));
+        }
+        let manifest: Manifest = serde_json::from_slice(&bytes)
+            .map_err(|error| invalid(format!("Invalid remote snapshot manifest: {error}")))?;
+        validate_manifest(&manifest)?;
+        let root = initialized(path)?;
+        let lock = VaultLock::acquire(&root)?;
+        if exists(&root.join(CONTROL).join("snapshots").join(id))? {
+            load(&root, id)?;
+        }
+        let mut references = BTreeMap::new();
+        for entry in &manifest.entries {
+            if let Entry::File { sha256, size, .. } = entry
+                && let Some(previous) = references.insert(sha256.clone(), *size)
+                && previous != *size
+            {
+                return Err(invalid(
+                    "Remote snapshot references an object with conflicting sizes",
+                ));
+            }
+        }
+        let references: Vec<_> = references.into_iter().collect();
+        let mut missing = Vec::new();
+        for (hash, size) in &references {
+            if exists(&object_path(&root, hash))? {
+                verify_object(&root, hash, *size)?;
+            } else {
+                missing.push((hash.clone(), *size));
+            }
+        }
+        if let Some(quota) = load_quota(&root)? {
+            let manifest_exists = exists(&root.join(CONTROL).join("snapshots").join(id))?;
+            let extra = missing.iter().try_fold(0u64, |sum, (_, size)| {
+                sum.checked_add(*size)
+                    .ok_or_else(|| invalid("Remote snapshot size overflow"))
+            })?;
+            let extra = extra
+                .checked_add(if manifest_exists {
+                    0
+                } else {
+                    bytes.len() as u64
+                })
+                .ok_or_else(|| invalid("Remote snapshot size overflow"))?;
+            let current = stored_vault_bytes(&root)?;
+            let projected = current
+                .checked_add(extra)
+                .ok_or_else(|| invalid("Remote vault usage overflow"))?;
+            if projected > quota.max_bytes {
+                return Err(invalid("Remote snapshot would exceed the vault quota"));
+            }
+            if extra > 0
+                && quota_warning(&QuotaAssessment {
+                    current_bytes: current,
+                    additional_bytes: extra,
+                    projected_bytes: projected,
+                    quota,
+                })
+            {
+                return Err(invalid(
+                    "Remote snapshot would reach the vault quota warning threshold; prototype pushes cannot acknowledge quota warnings",
+                ));
+            }
+        }
+        let scratch = create_temp_dir_sibling(&root.join("remote"))?;
+        Ok(Self {
+            root,
+            lock: Some(lock),
+            scratch: Some(scratch),
+            id: id.into(),
+            manifest: bytes,
+            references,
+            missing,
+        })
+    }
+
+    pub fn missing(&self) -> &[(String, u64)] {
+        &self.missing
+    }
+
+    pub fn receive_object(
+        &self,
+        hash: &str,
+        size: u64,
+        input: &mut impl Read,
+    ) -> Result<(), AppError> {
+        let expected = self
+            .missing
+            .binary_search_by_key(&hash, |(id, _)| id.as_str())
+            .ok()
+            .and_then(|index| self.missing.get(index))
+            .is_some_and(|(_, bytes)| *bytes == size);
+        if !expected {
+            return Err(invalid("Unexpected remote object"));
+        }
+        let scratch = self
+            .scratch
+            .as_ref()
+            .expect("active import has staging directory");
+        let staged = scratch.join(hash);
+        io_at(fs::create_dir(&staged), "stage remote object", &staged)?;
+        let data = staged.join("data");
+        let mut output = io_at(
+            OpenOptions::new().write(true).create_new(true).open(&data),
+            "create remote object",
+            &data,
+        )?;
+        let written = io_at(
+            std::io::copy(&mut input.take(size), &mut output),
+            "receive remote object",
+            &data,
+        )?;
+        if written != size {
+            return Err(invalid(format!("Remote object {hash} ended early")));
+        }
+        io_at(output.sync_all(), "flush remote object", &data)?;
+        drop(output);
+        if hash_file(&data, None)? != (hash.into(), size) {
+            return Err(invalid(format!(
+                "Remote object {hash} failed SHA-256 verification"
+            )));
+        }
+        publish(&staged, &object_path(&self.root, hash))?;
+        verify_object(&self.root, hash, size)
+    }
+
+    pub fn commit(mut self) -> Result<String, AppError> {
+        let result = (|| {
+            for (hash, size) in &self.references {
+                verify_object(&self.root, hash, *size)?;
+            }
+            save_manifest(&self.root, self.scratch.as_ref().unwrap(), &self.manifest)?;
+            Ok(())
+        })();
+        let scratch = self.scratch.take().unwrap();
+        let cleanup = io_at(
+            fs::remove_dir_all(&scratch),
+            "remove remote staging",
+            &scratch,
+        );
+        let release = self.lock.take().unwrap().release();
+        combine(combine(result, cleanup), release)?;
+        Ok(self.id.clone())
+    }
+}
+
+impl Drop for RemoteImport {
+    fn drop(&mut self) {
+        if let Some(scratch) = &self.scratch {
+            let _ = fs::remove_dir_all(scratch);
+        }
+    }
+}
+
 fn destination(path: &Path) -> Result<PathBuf, AppError> {
     let path: PathBuf = path.components().collect();
     if exists(&path)? {
