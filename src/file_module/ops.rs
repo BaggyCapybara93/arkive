@@ -233,8 +233,7 @@ impl<'a> FileManager<'a> {
                 return Ok(());
             }
 
-            let dst = FileManager::unique_trash_path(src_path)?;
-            super::trash::move_to_trash(src_path, &dst)?;
+            FileManager::trash_item(src_path)?;
 
             if self.settings.verbose {
                 println!("Moved {:?} to trash", src_path);

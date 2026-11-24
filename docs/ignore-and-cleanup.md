@@ -91,19 +91,26 @@ arkive remove downloads/ --pattern '*.tmp' --trash
 ## Trash
 
 Trash items are stored in `~/arkive_trash` when `HOME` is available, or
-`./arkive_trash` otherwise. Name collisions receive a numeric suffix. When the
-trash is on another filesystem, Arkive copies and verifies regular files or
-directories there before removing the originals. If the copy or verification
-fails, the originals remain in place. Cross-filesystem trash moves reject
-symlinks and special files; copied items may have new timestamps.
+`./arkive_trash` otherwise. New items have unique IDs, their original absolute
+paths, and UTC deletion times. Paths must be valid UTF-8 for metadata storage.
+When trash is on another filesystem, Arkive copies and verifies regular files or
+directories before removing the originals. Cross-filesystem moves reject symlinks
+and special files; copied items may have new timestamps.
 
 ```bash
-arkive list-trash
-arkive --dry-run --verbose empty-trash
-arkive empty-trash
+arkive trash list
+arkive trash restore <ID>
+arkive trash restore <ID> --destination /path/to/restored-file
+arkive --dry-run trash restore <ID>
+arkive trash empty
 ```
 
-`empty-trash` permanently removes every non-symlink entry in Arkive's trash.
+The destination is the full path for the restored item. Its parent must already
+exist, and Arkive will not overwrite an existing file, directory, or symlink.
+Items trashed before metadata was introduced appear with `legacy:` IDs and
+require `--destination` because their original paths are unknown. `list-trash`
+and `empty-trash` remain available as aliases for listing and emptying trash.
+Emptying permanently removes the trash contents.
 
 ## Deduplicate
 

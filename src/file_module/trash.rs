@@ -1,6 +1,7 @@
+use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::fs::{self, File};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use crate::file_module::FileManager;
@@ -150,6 +151,138 @@ pub(crate) fn move_to_trash(source: &Path, destination: &Path) -> Result<(), Fil
     move_to_trash_with(source, destination, move_no_replace)
 }
 
+const MANAGED_DIR: &str = ".arkive-items";
+
+#[derive(Serialize, Deserialize)]
+struct TrashMetadata {
+    original_path: PathBuf,
+    deleted_at: chrono::DateTime<chrono::Utc>,
+}
+
+fn store_item(source: &Path, trash: &Path) -> Result<String, FileManagerError> {
+    let name = source
+        .file_name()
+        .ok_or_else(|| FileManagerError::InvalidInput("Invalid file name".into()))?;
+    let parent = source
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let original_path = fs::canonicalize(parent)?.join(name);
+    let managed = trash.join(MANAGED_DIR);
+    fs::create_dir_all(&managed)?;
+    let (id, item) = (0u64..)
+        .find_map(|n| {
+            let id = format!(
+                "item-{}-{n}",
+                chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+            );
+            let item = managed.join(&id);
+            match fs::create_dir(&item) {
+                Ok(()) => Some(Ok((id, item))),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => None,
+                Err(e) => Some(Err(e)),
+            }
+        })
+        .expect("ID space exhausted")?;
+    let metadata = TrashMetadata {
+        original_path,
+        deleted_at: chrono::Utc::now(),
+    };
+    let result = (|| -> Result<(), FileManagerError> {
+        let bytes = serde_json::to_vec(&metadata).map_err(|e| {
+            FileManagerError::InvalidInput(format!("Cannot encode trash metadata: {e}"))
+        })?;
+        let mut file = File::create(item.join("metadata.json"))?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        move_to_trash(source, &item.join("data"))
+    })();
+    if let Err(error) = result {
+        // A cross-device move can fail after publishing the copy. Keep its
+        // metadata and payload in that case so the copy remains recoverable.
+        if fs::symlink_metadata(item.join("data")).is_err() {
+            let _ = fs::remove_dir_all(&item);
+        }
+        return Err(error);
+    }
+    Ok(id)
+}
+
+fn read_metadata(item: &Path) -> Result<TrashMetadata, FileManagerError> {
+    serde_json::from_reader(File::open(item.join("metadata.json"))?).map_err(|e| {
+        FileManagerError::InvalidInput(format!("Invalid trash metadata at {item:?}: {e}"))
+    })
+}
+
+fn restore_item(
+    trash: &Path,
+    id: &str,
+    destination: Option<&Path>,
+    dry_run: bool,
+) -> Result<(), FileManagerError> {
+    let (source, original, item) = if let Some(name) = id.strip_prefix("legacy:") {
+        if name.is_empty()
+            || Path::new(name).components().count() != 1
+            || name == "."
+            || name == ".."
+            || name == MANAGED_DIR
+        {
+            return Err(FileManagerError::InvalidInput("Invalid trash ID".into()));
+        }
+        (trash.join(name), None, None)
+    } else {
+        if !id.starts_with("item-")
+            || !id
+                .bytes()
+                .all(|b| b.is_ascii_digit() || b == b'-' || b.is_ascii_lowercase())
+            || id.contains('/')
+        {
+            return Err(FileManagerError::InvalidInput("Invalid trash ID".into()));
+        }
+        let item = trash.join(MANAGED_DIR).join(id);
+        let metadata = read_metadata(&item)?;
+        (item.join("data"), Some(metadata.original_path), Some(item))
+    };
+    fs::symlink_metadata(&source)?;
+    let target = destination
+        .map(Path::to_path_buf)
+        .or(original)
+        .ok_or_else(|| {
+            FileManagerError::InvalidInput("Legacy trash items require --destination".into())
+        })?;
+    let parent = target
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let resolved_parent = fs::canonicalize(parent)?;
+    if resolved_parent.starts_with(fs::canonicalize(trash)?) {
+        return Err(FileManagerError::InvalidInput(
+            "Cannot restore into the trash directory".into(),
+        ));
+    }
+    match fs::symlink_metadata(&target) {
+        Ok(_) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("Destination already exists: {target:?}"),
+            )
+            .into());
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    if dry_run {
+        println!("[DRY-RUN] Would restore {id} to {}", target.display());
+    } else {
+        move_to_trash(&source, &target)?;
+        if let Some(item) = item {
+            fs::remove_dir_all(item)?;
+        }
+        println!("Restored {id} to {}", target.display());
+    }
+    Ok(())
+}
+
 impl<'a> FileManager<'a> {
     pub(crate) fn trash_path() -> Result<PathBuf, FileManagerError> {
         Ok(if let Some(home) = std::env::var_os("HOME") {
@@ -169,55 +302,18 @@ impl<'a> FileManager<'a> {
         Ok(trash)
     }
 
-    /// Build a destination in the shared trash directory without replacing an
-    /// item that is already there. This is used by every operation that moves
-    /// an item to trash, so `list-trash` and `empty-trash` see the same files.
-    pub(crate) fn unique_trash_path(src: &Path) -> Result<PathBuf, FileManagerError> {
-        let file_name = src
-            .file_name()
-            .ok_or_else(|| FileManagerError::InvalidInput("Invalid file name".into()))?;
-        let trash = Self::trash_dir()?;
-        Self::unique_path(&trash.join(file_name))
+    pub(crate) fn trash_item(src: &Path) -> Result<String, FileManagerError> {
+        store_item(src, &Self::trash_dir()?)
     }
 
-    fn unique_path(path: &Path) -> Result<PathBuf, FileManagerError> {
-        match fs::symlink_metadata(path) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(path.to_path_buf());
-            }
-            Err(error) => return Err(error.into()),
-            Ok(_) => {}
-        }
-
-        let parent = path.parent().ok_or_else(|| {
-            FileManagerError::InvalidInput(format!("Trash destination has no parent: {:?}", path))
-        })?;
-        let file_name = path.file_name().ok_or_else(|| {
-            FileManagerError::InvalidInput(format!(
-                "Trash destination has no file name: {:?}",
-                path
-            ))
-        })?;
-        let stem = path.file_stem().unwrap_or(file_name);
-        let extension = path.extension();
-
-        for suffix in 1u64.. {
-            let mut candidate_name = OsString::from(stem);
-            candidate_name.push(format!("-{suffix}"));
-            if let Some(extension) = extension {
-                candidate_name.push(".");
-                candidate_name.push(extension);
-            }
-
-            let candidate = parent.join(candidate_name);
-            match fs::symlink_metadata(&candidate) {
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(candidate),
-                Err(error) => return Err(error.into()),
-                Ok(_) => {}
-            }
-        }
-
-        unreachable!("u64 suffix space is exhausted")
+    pub fn restore_trash(
+        id: &str,
+        destination: Option<&Path>,
+        settings: &Settings,
+    ) -> Result<(), FileManagerError> {
+        let trash = Self::trash_path()?;
+        let _guard = Self::acquire_paths([trash.as_path()]);
+        restore_item(&trash, id, destination, settings.dry_run)
     }
 
     pub fn empty_trash(settings: &Settings) -> Result<(), FileManagerError> {
@@ -285,9 +381,25 @@ impl<'a> FileManager<'a> {
         let _guard = Self::acquire_paths([lock_path.as_path()]);
         let trash = Self::trash_dir()?;
 
-        for entry in std::fs::read_dir(trash)? {
+        for entry in fs::read_dir(&trash)? {
             let entry = entry?;
-            println!("{:?}", entry.path());
+            if entry.file_name() == MANAGED_DIR {
+                for item in fs::read_dir(entry.path())? {
+                    let item = item?;
+                    let metadata = read_metadata(&item.path())?;
+                    println!(
+                        "{}\t{}\t{}",
+                        item.file_name().to_string_lossy(),
+                        metadata.deleted_at.to_rfc3339(),
+                        metadata.original_path.display()
+                    );
+                }
+            } else {
+                println!(
+                    "legacy:{}\tunknown\tunknown",
+                    entry.file_name().to_string_lossy()
+                );
+            }
         }
         Ok(())
     }
@@ -296,7 +408,7 @@ impl<'a> FileManager<'a> {
 #[cfg(test)]
 mod tests {
     use super::{move_to_trash, move_to_trash_with};
-    use crate::file_module::{FileManager, FileManagerError};
+    use crate::file_module::FileManagerError;
     use crate::test::TestDir;
     use std::fs;
     use std::io::{self, ErrorKind};
@@ -391,25 +503,63 @@ mod tests {
         assert!(!destination.exists());
         assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
     }
-
-    #[cfg(unix)]
     #[test]
-    fn dangling_symlink_in_trash_reserves_its_name() {
-        use std::os::unix::fs::symlink;
-
-        let temp = TestDir::new("trash-dangling-symlink");
-        let destination = temp.path().join("save.dat");
-        symlink(temp.path().join("missing"), &destination).unwrap();
-
+    fn managed_item_records_metadata_and_restores() {
+        let temp = TestDir::new("trash-round-trip");
+        let trash = temp.path().join("trash");
+        fs::create_dir(&trash).unwrap();
+        let source = temp.path().join("save.dat");
+        fs::write(&source, b"save").unwrap();
+        let before = chrono::Utc::now();
+        let id = super::store_item(&source, &trash).unwrap();
+        let item = trash.join(super::MANAGED_DIR).join(&id);
+        let metadata = super::read_metadata(&item).unwrap();
         assert_eq!(
-            FileManager::unique_path(&destination).unwrap(),
-            temp.path().join("save-1.dat")
+            metadata.original_path,
+            fs::canonicalize(temp.path()).unwrap().join("save.dat")
         );
+        assert!(metadata.deleted_at >= before && metadata.deleted_at <= chrono::Utc::now());
+        super::restore_item(&trash, &id, None, true).unwrap();
+        assert!(!source.exists());
+        super::restore_item(&trash, &id, None, false).unwrap();
+        assert_eq!(fs::read(source).unwrap(), b"save");
+        assert!(!item.exists());
+    }
+
+    #[test]
+    fn collisions_preserve_both_items_and_alternate_destination_works() {
+        let temp = TestDir::new("trash-restore-collision");
+        let trash = temp.path().join("trash");
+        fs::create_dir(&trash).unwrap();
+        let source = temp.path().join("save");
+        fs::write(&source, b"trashed").unwrap();
+        let id = super::store_item(&source, &trash).unwrap();
+        fs::write(&source, b"existing").unwrap();
+        assert!(super::restore_item(&trash, &id, None, false).is_err());
+        assert_eq!(fs::read(&source).unwrap(), b"existing");
+        let alternate = temp.path().join("alternate");
+        super::restore_item(&trash, &id, Some(&alternate), false).unwrap();
+        assert_eq!(fs::read(alternate).unwrap(), b"trashed");
+    }
+
+    #[test]
+    fn legacy_requires_destination_and_rejects_invalid_ids() {
+        let temp = TestDir::new("trash-legacy");
+        let trash = temp.path().join("trash");
+        fs::create_dir(&trash).unwrap();
+        fs::write(trash.join("old"), b"legacy").unwrap();
+        assert!(super::restore_item(&trash, "legacy:old", None, false).is_err());
         assert!(
-            fs::symlink_metadata(destination)
-                .unwrap()
-                .file_type()
-                .is_symlink()
+            super::restore_item(
+                &trash,
+                "legacy:../old",
+                Some(&temp.path().join("bad")),
+                false
+            )
+            .is_err()
         );
+        let target = temp.path().join("restored");
+        super::restore_item(&trash, "legacy:old", Some(&target), false).unwrap();
+        assert_eq!(fs::read(target).unwrap(), b"legacy");
     }
 }

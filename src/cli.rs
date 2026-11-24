@@ -29,6 +29,21 @@ pub struct Cli {
     pub command: Command,
 }
 
+#[derive(Subcommand)]
+pub enum TrashCommand {
+    /// List trashed items and their IDs
+    List,
+    /// Permanently empty the trash
+    Empty,
+    /// Restore an item to its original path or an explicit destination
+    Restore {
+        id: String,
+        /// Full path to restore the item to
+        #[arg(long, short)]
+        destination: Option<PathBuf>,
+    },
+}
+
 #[derive(Args, Clone, Debug, Default)]
 pub struct IgnoreArgs {
     /// Do not load the global Arkive ignore file
@@ -205,6 +220,12 @@ pub enum Command {
         /// Print the preflight plan without running any jobs
         #[arg(long)]
         plan: bool,
+    },
+
+    /// Manage trashed items
+    Trash {
+        #[command(subcommand)]
+        command: TrashCommand,
     },
 
     /// Empty the arkive trash directory
@@ -1089,6 +1110,14 @@ pub fn cli_handler(
             settings,
         ),
         Command::Batch { file, plan } => handle_batch(&file, plan, settings),
+        Command::Trash { command } => match command {
+            TrashCommand::List => handle_list_trash(settings),
+            TrashCommand::Empty => handle_empty_trash(settings),
+            TrashCommand::Restore { id, destination } => {
+                FileManager::restore_trash(&id, destination.as_deref(), settings)?;
+                Ok(())
+            }
+        },
         Command::EmptyTrash => handle_empty_trash(settings),
         Command::ListTrash => handle_list_trash(settings),
         Command::Deduplicate { path, trash } => handle_deduplicate(&path, trash, settings),
