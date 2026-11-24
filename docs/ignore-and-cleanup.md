@@ -111,8 +111,12 @@ arkive empty-trash
 arkive deduplicate [--trash] <PATH>
 ```
 
-Find files with identical hashes and remove duplicate copies. By default
-duplicates are deleted permanently; use `--trash` to retain them.
+Files are grouped by size before hashing, and the lexicographically smallest path
+in each matching group is retained. The complete removal plan and estimated
+logical byte savings are printed before removal. Use `--dry-run` to preview the
+plan without changing files. By default duplicates are deleted permanently; use
+`--trash` to retain them. Files in trash still occupy space until it is emptied;
+actual disk savings can also differ from logical sizes (for example, with hard links).
 
 ```bash
 arkive --dry-run --verbose deduplicate photos/
